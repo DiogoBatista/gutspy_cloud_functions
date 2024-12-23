@@ -1,8 +1,8 @@
 /* eslint-disable max-len */
-import {GoogleGenerativeAI} from "@google/generative-ai";
+import { GoogleGenerativeAI } from "@google/generative-ai";
 import * as admin from "firebase-admin";
-import {onDocumentCreated, onDocumentUpdated} from "firebase-functions/v2/firestore";
-import {onObjectFinalized} from "firebase-functions/v2/storage";
+import { onDocumentCreated } from "firebase-functions/v2/firestore";
+import { onObjectFinalized } from "firebase-functions/v2/storage";
 import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
@@ -16,78 +16,91 @@ const db = admin.firestore();
 // Start writing functions
 // https://firebase.google.com/docs/functions/typescript
 
-
 // Cloud Function to handle object finalization in Firebase Storage
-export const fileCreated =
-  onObjectFinalized({bucket: "nutrisnap-96caf.appspot.com"},
-    async (event) => {
-      // Extract the file path and name
-      const filePath = event.data.name; // File path in the bucket
-      if (!filePath) return console.log("No file path found");
+export const fileCreated = onObjectFinalized(
+  { bucket: "nutrisnap-96caf.appspot.com" },
+  async (event) => {
+    // Extract the file path and name
+    const filePath = event.data.name; // File path in the bucket
+    if (!filePath) return console.log("No file path found");
 
-      // Split the filePath to get userID, type and filename
-      const pathSegments = filePath.split("/");
-      if (pathSegments.length < 3) {
-        return console.log("Unexpected file path structure:", filePath);
-      }
+    // Split the filePath to get userID, type and filename
+    const pathSegments = filePath.split("/");
+    if (pathSegments.length < 3) {
+      return console.log("Unexpected file path structure:", filePath);
+    }
 
-      // Structure is "userID/type/filename"
-      const userID = pathSegments[0];
-      const type = pathSegments[1];
-      const filename = pathSegments[2];
+    // Structure is "userID/type/filename"
+    const userID = pathSegments[0];
+    const type = pathSegments[1];
+    const filename = pathSegments[2];
 
-      console.log("userID", userID);
-      console.log("type", type);
-      console.log("filename", filename);
+    console.log("userID", userID);
+    console.log("type", type);
+    console.log("filename", filename);
 
+    // Validate type
+    if (!["meals", "digestions", "profile"].includes(type)) {
+      return console.log("Invalid type:", type);
+    }
 
-      // Validate type
-      if (!["meals", "digestions", "profile"].includes(type)) {
-        return console.log("Invalid type:", type);
-      }
+    // Determine collection based on type
+    let collection = "";
 
-      // Determine collection based on type
-      let collection = "";
+    if (type === "meals") {
+      collection = "meal_records";
+    } else if (type === "digestions") {
+      collection = "digestion_records";
+    } else if (type === "profile") {
+      collection = "user_profiles";
+    }
 
-      if (type === "meals") {
-        collection = "meal_records";
-      } else if (type === "digestions") {
-        collection = "digestion_records";
+    if (collection === "") {
+      return console.log("Invalid type:", type);
+    }
+
+    try {
+      if (type === "digestions") {
+        const digestionRecordData = {
+          userID: userID,
+          filename: filename,
+          status: "to_be_processed",
+          analysis: {
+            source: "ai",
+          },
+          created_at: admin.firestore.Timestamp.now(),
+          type: type,
+        };
+
+        await db.collection(collection).add(digestionRecordData);
+        console.log("Digestion record added successfully");
+      } else if (type === "meals") {
+        // Add meal record
+        const mealRecordData = {
+          userID: userID,
+          filename: filename,
+          status: "to_be_processed",
+          nutritional_report: null,
+          created_at: admin.firestore.Timestamp.now(),
+          type: type,
+        };
+
+        await db.collection(collection).add(mealRecordData);
+        console.log("Meal record added successfully");
       } else if (type === "profile") {
-        collection = "user_profiles";
+        // TODO: Add profile record
       }
 
-      if (collection === "") {
-        return console.log("Invalid type:", type);
-      }
+      // console.log(`${type} successfully written with ID:`, docRef.id);
+    } catch (error) {
+      console.error("Error writing document:", error);
+    }
+  }
+);
 
-      try {
-        if (type === "digestions") {
-          // TODO: nothing to do here ??
-        } else if (type === "meals") {
-          // Add meal record
-          const mealRecordData = {
-            userID: userID,
-            filename: filename,
-            status: "to_be_processed",
-            nutritional_report: null,
-            uploaded_at: admin.firestore.Timestamp.now(),
-            type: type,
-          };
-
-          await db.collection(collection).add(mealRecordData);
-        } else if (type === "profile") {
-          // TODO: Add profile record
-        }
-
-        // console.log(`${type} successfully written with ID:`, docRef.id);
-      } catch (error) {
-        console.error("Error writing document:", error);
-      }
-    });
-
-export const onImageProcessingRecordCreated =
-  onDocumentCreated("/meal_records/{recordId}", async (event) => {
+export const onImageProcessingRecordCreated = onDocumentCreated(
+  "/meal_records/{recordId}",
+  async (event) => {
     const recordId = event.params.recordId;
     const snapshot = event.data;
 
@@ -97,7 +110,6 @@ export const onImageProcessingRecordCreated =
     }
 
     const newData = snapshot.data();
-
 
     console.log(`New record with ID ${recordId} and data:`, newData);
 
@@ -113,12 +125,13 @@ export const onImageProcessingRecordCreated =
     });
 
     // Fetch the image (assuming the image is stored in Firebase Storage)
-    const storage = admin.storage();
-    const bucket = storage.bucket("nutrisnap-96caf.appspot.com");
-    const type = newData.type;
-    const filePath = `${newData.userID}/${type}/${newData.filename}`;
 
     try {
+      const storage = admin.storage();
+      const bucket = storage.bucket("nutrisnap-96caf.appspot.com");
+      const type = newData.type;
+      const filePath = `${newData.userID}/${type}/${newData.filename}`;
+
       const file = bucket.file(filePath);
       const [fileExists] = await file.exists();
       if (!fileExists) {
@@ -126,10 +139,9 @@ export const onImageProcessingRecordCreated =
         return null;
       }
 
-
       // Download the file to a temporary location to process
       const tempFilePath = path.join(os.tmpdir(), newData.filename);
-      await file.download({destination: tempFilePath});
+      await file.download({ destination: tempFilePath });
       console.log("File downloaded locally to", tempFilePath);
 
       // Convert file to base64
@@ -141,32 +153,32 @@ export const onImageProcessingRecordCreated =
       // ...
 
       const genAi = new GoogleGenerativeAI("AIzaSyDCR7Ie019T6bR7tSUiASbr8RkMp4pI-jI");
-      const model = genAi.getGenerativeModel({model: "gemini-1.5-flash"});
+      const model = genAi.getGenerativeModel({ model: "gemini-1.5-flash" });
 
       // Define your prompt construction logic here
       const foodCategoriesJsonString = JSON.stringify(
         {
-          "fruits": [],
-          "vegetables": [],
-          "grains": [],
-          "proteins": {
-            "meats": [],
-            "poultry": [],
+          fruits: [],
+          vegetables: [],
+          grains: [],
+          proteins: {
+            meats: [],
+            poultry: [],
             "fish and seafood": [],
-            "eggs": [],
-            "legumes": [],
+            eggs: [],
+            legumes: [],
             "nuts and seeds": [],
           },
           "dairy and non-dairy alternatives": {
-            "milk": [],
-            "cheese": [],
-            "yogurt": [],
+            milk: [],
+            cheese: [],
+            yogurt: [],
             "plant-based milks": [],
           },
           "fats and oils": [],
           "herbs and spices": [],
-          "sweeteners": [],
-          "beverages": [],
+          sweeteners: [],
+          beverages: [],
           "condiments and sauces": [],
           "baking and cooking ingredients": [],
           "snacks and sweets": [],
@@ -174,10 +186,8 @@ export const onImageProcessingRecordCreated =
           "whole meals": [],
         },
         null,
-        2,
+        2
       );
-
-      console.log("foodCategoriesJsonString", foodCategoriesJsonString);
 
       const outputFormat = JSON.stringify(
         {
@@ -212,10 +222,8 @@ export const onImageProcessingRecordCreated =
           description: "",
         },
         null,
-        2,
+        2
       );
-
-      console.log("outputFormat", outputFormat);
 
       const prompt =
         "Given an image provided, assume that you are working for an app and do the following: " +
@@ -231,9 +239,6 @@ export const onImageProcessingRecordCreated =
         outputFormat +
         " The ultimate goal is to provide users with an informative and engaging experience that helps them understand the composition of their meals and encourages informed dietary choices. Remember to provide ONLY the JSON response without any additional commentary or markdown formatting, and ensure all nutritional values are numerical.";
 
-
-      console.log("prompt", prompt);
-
       // Return the constructed prompt
 
       // Use the base64Image in your generative model
@@ -243,8 +248,6 @@ export const onImageProcessingRecordCreated =
           mimeType: "image/png", // Adjust the MIME type based on your actual image type
         },
       };
-
-      console.log("image", image);
 
       // Generate content using the model
       const result = await model.generateContent([prompt, image]);
@@ -306,65 +309,205 @@ export const onImageProcessingRecordCreated =
       });
       return null;
     }
-  });
+  }
+);
 
 // New function to handle digestion record processing
-export const onDigestionRecordUpdated = onDocumentUpdated(
+export const onDigestionRecordCreated = onDocumentCreated(
   "/digestion_records/{recordId}",
   async (event) => {
-    console.log("onDigestionRecordUpdated", event);
+    console.log("onDigestionRecordCreated", event);
 
-    const data = event.data;
+    const snapshot = event.data;
+    if (!snapshot) {
+      console.log("No data associated with the event");
+      return;
+    }
+
+    const data = snapshot.data();
+    const docRef = snapshot.ref;
+
+    console.log("New record data:", data);
 
     if (!data) {
       console.log("No data associated with the event");
       return;
     }
 
-    const beforeData = data.before.data();
-    const afterData = data.after.data();
-    const docRef = data.after.ref; // Get the document reference
+    const genAi = new GoogleGenerativeAI("AIzaSyDCR7Ie019T6bR7tSUiASbr8RkMp4pI-jI");
+    const model = genAi.getGenerativeModel({ model: "gemini-1.5-flash" });
 
-    console.log("beforeData", beforeData);
-    console.log("afterData", afterData);
-
-    if (!beforeData || !afterData) {
-      console.log("No data associated with the event");
-      return;
-    }
-
-    // Only process if status changed to "processing"
-    if (beforeData.status !== "processing" && afterData.status === "processing") {
-      console.log(`Processing digestion record ${event.params.recordId}`);
-
+    // Process based on the source
+    if (data.analysis.source === "manual") {
       try {
-        // Process image and update record
-        // const storage = admin.storage();
-        // const bucket = storage.bucket("nutrisnap-96caf.appspot.com");
-        // const filePath = `${afterData.user_id}/digestions/${afterData.filename}`;
+        const outputFormatDigestion = JSON.stringify(
+          {
+            analysis: {
+              color: "",
+              consistency: "",
+              shape: "",
+              size: "",
+              presence_of_blood: false,
+              presence_of_mucus: false,
+              bristol_stool_scale: 0,
+            },
+            concerns: [],
+            recommendations: [],
+            summary: "",
+          },
+          null,
+          2
+        );
 
-        // ... image processing logic ...
+        const promptDigestion =
+          "As an AI medical expert specializing in gastroenterology, analyze the following stool characteristics and provide medical insights: " +
+          `Bristol Scale: Type ${data.analysis.bristol_scale}\n` +
+          `Color: ${data.analysis.color}\n` +
+          `Consistency: ${data.analysis.consistency}\n` +
+          `Shape: ${data.analysis.shape}\n` +
+          `Size: ${data.analysis.size}\n` +
+          `Presence of Blood: ${data.analysis.has_blood}\n` +
+          `Presence of Mucus: ${data.analysis.has_mucus}\n\n` +
+          "Based on these characteristics:\n" +
+          "1. Clinical Assessment: Evaluate the stool characteristics for any potential health implications.\n" +
+          "2. Medical Concerns: List any potential health concerns based on the provided characteristics.\n" +
+          "3. Recommendations: Provide relevant medical recommendations based on the analysis.\n" +
+          "Output: Respond ONLY with a JSON object that matches exactly the following template, without any additional text or explanations: " +
+          outputFormatDigestion +
+          " Ensure all responses are clinical and professional in nature. The analysis should focus on providing actionable medical insights while maintaining medical accuracy and professionalism.";
 
-        const analysisResult = {
-          concerns: [
-            // AI analysis results
-            "This is a test",
-          ],
-          recommendations: [
-            // AI recommendations
-            "This is a test",
-          ],
-        };
+        // Generate content using the model
+        const result = await model.generateContent([promptDigestion]);
+        const responseText = result.response.text();
 
-        // Use docRef instead of afterData
+        // Extract the JSON part from the markdown response
+        const jsonMatch = responseText.match(/```json\n([\s\S]*?)\n```/);
+        if (!jsonMatch) {
+          throw new Error("Could not find JSON content in response");
+        }
+
+        const jsonContent = jsonMatch[1];
+        const resultJson = JSON.parse(jsonContent);
+
+        // Update record with AI insights
         await docRef.update({
           status: "processed",
-          ai_analysis: analysisResult,
           processed_at: admin.firestore.Timestamp.now(),
+          // Keep the original analysis data but add AI recommendations
+          ai_concerns: resultJson.concerns,
+          ai_recommendations: resultJson.recommendations,
         });
       } catch (error) {
-        console.error("Failed to process digestion record:", error);
-        // Use docRef instead of afterData
+        console.error("Failed to process manual record:", error);
+        await docRef.update({
+          status: "failed",
+          error_details: {
+            message: error instanceof Error ? error.message : String(error),
+          },
+        });
+      }
+    } else if (data.filename) {
+      // Process AI image analysis
+      try {
+        const storage = admin.storage();
+        const bucket = storage.bucket("nutrisnap-96caf.appspot.com");
+        const filePath = `${data.userID}/digestions/${data.filename}`;
+
+        const file = bucket.file(filePath);
+        const [fileExists] = await file.exists();
+
+        if (!fileExists) {
+          await docRef.update({
+            status: "failed",
+            error_details: {
+              message: "File does not exist",
+            },
+          });
+          return null;
+        }
+
+        // update the status to processing
+        await docRef.update({
+          status: "processing",
+        });
+
+        // Download and process image
+        const tempFilePath = path.join(os.tmpdir(), data.filename);
+        await file.download({ destination: tempFilePath });
+        const fileBuffer = fs.readFileSync(tempFilePath);
+        const base64Encoded = fileBuffer.toString("base64");
+
+        const outputFormatDigestion = JSON.stringify(
+          {
+            analysis: {
+              color: "",
+              consistency: "",
+              shape: "",
+              size: "",
+              presence_of_blood: false,
+              presence_of_mucus: false,
+              bristol_stool_scale: 0,
+            },
+            concerns: [],
+            recommendations: [],
+            summary: "",
+          },
+          null,
+          2
+        );
+
+        const promptDigestion =
+          "As an AI medical expert specializing in gastroenterology, analyze the provided image of a bowel movement. " +
+          "Perform the following analysis with clinical precision: " +
+          "1. Visual Assessment: Evaluate the stool's physical characteristics including color, consistency, shape, and size. " +
+          "2. Clinical Indicators: Identify any concerning elements such as the presence of blood, mucus, or abnormal coloration. " +
+          "3. Bristol Stool Scale Classification: Determine the type according to the Bristol Stool Form Scale (1-7). " +
+          "4. Medical Concerns: List any potential health concerns based on the visual analysis. " +
+          "5. Recommendations: Provide relevant medical recommendations if concerns are identified. " +
+          "Output: Respond ONLY with a JSON object that matches exactly the following template, without any additional text or explanations: " +
+          outputFormatDigestion;
+
+        const image = {
+          inlineData: {
+            data: base64Encoded,
+            mimeType: "image/png",
+          },
+        };
+
+        const result = await model.generateContent([promptDigestion, image]);
+        const responseText = result.response.text();
+
+        const jsonMatch = responseText.match(/```json\n([\s\S]*?)\n```/);
+        if (!jsonMatch) {
+          throw new Error("Could not find JSON content in response");
+        }
+
+        const jsonContent = jsonMatch[1];
+        const resultJson = JSON.parse(jsonContent);
+
+        // Update with new structure
+        await docRef.update({
+          status: "processed",
+          processed_at: admin.firestore.Timestamp.now(),
+          analysis: {
+            ...data.analysis,
+            bristol_scale: resultJson.analysis.bristol_stool_scale.toString(),
+            color: resultJson.analysis.color,
+            consistency: resultJson.analysis.consistency,
+            shape: resultJson.analysis.shape,
+            size: resultJson.analysis.size,
+            has_blood: resultJson.analysis.presence_of_blood,
+            has_mucus: resultJson.analysis.presence_of_mucus,
+            source: "ai",
+          },
+          ai_concerns: resultJson.concerns,
+          ai_recommendations: resultJson.recommendations,
+        });
+
+        // Clean up temp file
+        fs.unlinkSync(tempFilePath);
+      } catch (error) {
+        console.error("Failed to process AI record:", error);
         await docRef.update({
           status: "failed",
           error_details: {
