@@ -1,17 +1,27 @@
 /* eslint-disable max-len */
-import { GoogleGenerativeAI } from "@google/generative-ai";
 import * as admin from "firebase-admin";
+import { getAuth } from "firebase-admin/auth";
+import { getFirestore, Timestamp } from "firebase-admin/firestore";
 import { onDocumentCreated } from "firebase-functions/v2/firestore";
+import { onSchedule, ScheduledEvent } from "firebase-functions/v2/scheduler";
 import { onObjectFinalized } from "firebase-functions/v2/storage";
 import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
+import { AIService } from "./services/ai";
+import { generateUserWeeklySummary } from "./user";
 
-// Initialize Firebase Admin SDK
-admin.initializeApp();
+admin.initializeApp({
+  projectId: "nutrisnap-96caf",
+});
 
-// Firestore reference
-const db = admin.firestore();
+// Get service instances
+const db = getFirestore();
+const auth = getAuth();
+
+// Debug logging
+// console.log("Firebase Admin initialized with config:", admin.app().options);
+// console.log("Firestore instance:", db);
 
 // Start writing functions
 // https://firebase.google.com/docs/functions/typescript
@@ -68,22 +78,28 @@ export const fileCreated = onObjectFinalized(
           analysis: {
             source: "ai",
           },
-          created_at: admin.firestore.Timestamp.now(),
+          created_at: Timestamp.fromDate(new Date()),
           type: type,
         };
+
+        console.log("Digestion record data:", digestionRecordData);
 
         await db.collection(collection).add(digestionRecordData);
         console.log("Digestion record added successfully");
       } else if (type === "meals") {
+        console.log("TIMESTAMP: ", Timestamp, Timestamp.fromDate(new Date()));
+
         // Add meal record
         const mealRecordData = {
           userID: userID,
           filename: filename,
           status: "to_be_processed",
           nutritional_report: null,
-          created_at: admin.firestore.Timestamp.now(),
+          created_at: Timestamp.fromDate(new Date()),
           type: type,
         };
+
+        console.log("Meal record data:", mealRecordData);
 
         await db.collection(collection).add(mealRecordData);
         console.log("Meal record added successfully");
@@ -124,8 +140,6 @@ export const onImageProcessingRecordCreated = onDocumentCreated(
       status: "processing",
     });
 
-    // Fetch the image (assuming the image is stored in Firebase Storage)
-
     try {
       const storage = admin.storage();
       const bucket = storage.bucket("nutrisnap-96caf.appspot.com");
@@ -149,154 +163,15 @@ export const onImageProcessingRecordCreated = onDocumentCreated(
       const base64Encoded = fileBuffer.toString("base64");
       console.log("File converted to Base64");
 
-      // Optionally, you can now store this base64 string in Firestore or pass it to another function
-      // ...
+      // Use AIService to analyze the image
+      const aiService = AIService.getInstance();
+      const resultJson = await aiService.analyzeMealImage(base64Encoded);
 
-      const genAi = new GoogleGenerativeAI("AIzaSyDCR7Ie019T6bR7tSUiASbr8RkMp4pI-jI");
-      const model = genAi.getGenerativeModel({ model: "gemini-1.5-flash" });
-
-      // Define your prompt construction logic here
-      const foodCategoriesJsonString = JSON.stringify(
-        {
-          fruits: [],
-          vegetables: [],
-          grains: [],
-          proteins: {
-            meats: [],
-            poultry: [],
-            "fish and seafood": [],
-            eggs: [],
-            legumes: [],
-            "nuts and seeds": [],
-          },
-          "dairy and non-dairy alternatives": {
-            milk: [],
-            cheese: [],
-            yogurt: [],
-            "plant-based milks": [],
-          },
-          "fats and oils": [],
-          "herbs and spices": [],
-          sweeteners: [],
-          beverages: [],
-          "condiments and sauces": [],
-          "baking and cooking ingredients": [],
-          "snacks and sweets": [],
-          "prepared and processed foods": [],
-          "whole meals": [],
-        },
-        null,
-        2
-      );
-
-      const outputFormat = JSON.stringify(
-        {
-          image_recognition: {
-            name: "",
-          },
-          ingredient_extraction: [],
-          ingredient_categorization: {},
-          nutritional_information: {
-            calories: "",
-            macronutrients: {
-              carbohydrates: "",
-              proteins: "",
-              fats: "",
-            },
-            micronutrients: {
-              vitamins: {
-                vitaminC: "",
-                vitaminA: "",
-              },
-              minerals: {
-                potassium: "",
-                magnesium: "",
-              },
-            },
-          },
-          caloric_breakdown: {
-            carbohydrates: "",
-            proteins: "",
-            fats: "",
-          },
-          description: "",
-        },
-        null,
-        2
-      );
-
-      const prompt =
-        "Given an image provided, assume that you are working for an app and do the following: " +
-        "Image Recognition: Utilize advanced image recognition technology to analyze user-uploaded food images. The system should be capable of identifying the dish presented in the image with high accuracy. " +
-        "Ingredient Extraction: Once the dish is identified, deploy a food recognition algorithm to dissect the image and determine the individual ingredients that make up the dish. The algorithm should be trained on a comprehensive dataset of food images and their corresponding ingredients to ensure broad coverage of various cuisines and dish types. " +
-        "Ingredient Categorization: Organize the extracted ingredients into standard food categories. " +
-        "These categories may include, but are not limited to, the following: " +
-        foodCategoriesJsonString +
-        "Nutritional Information: Provide numerical values only for nutritional information. All measurements should be in grams (g) for macronutrients, milligrams (mg) for micronutrients, and absolute numbers for calories. Do not include text descriptions, ranges, or approximations - use single numerical values even if estimated. " +
-        "Caloric Breakdown: Calculate specific numerical values for the caloric content. Provide exact numbers for the breakdown of calories by macronutrient (carbohydrates, proteins, fats), avoiding any text descriptions or ranges. " +
-        "Description: Generate a tentative name for the dish and a brief description based on the identified ingredients. " +
-        "Output: Respond ONLY with a JSON object that matches exactly the following template, without any additional text, notes, or explanations. All nutritional values must be numbers, not strings or text descriptions: " +
-        outputFormat +
-        " The ultimate goal is to provide users with an informative and engaging experience that helps them understand the composition of their meals and encourages informed dietary choices. Remember to provide ONLY the JSON response without any additional commentary or markdown formatting, and ensure all nutritional values are numerical.";
-
-      // Return the constructed prompt
-
-      // Use the base64Image in your generative model
-      const image = {
-        inlineData: {
-          data: base64Encoded,
-          mimeType: "image/png", // Adjust the MIME type based on your actual image type
-        },
-      };
-
-      // Generate content using the model
-      const result = await model.generateContent([prompt, image]);
-
-      // Log the entire result object
-      console.log("Complete result object:", JSON.stringify(result, null, 2));
-
-      // Get the raw response text
-      const responseText = result.response.text();
-      console.log("Raw response text:", responseText);
-
-      try {
-        // Extract the JSON part from the markdown response
-        const jsonMatch = responseText.match(/```json\n([\s\S]*?)\n```/);
-
-        if (!jsonMatch) {
-          throw new Error("Could not find JSON content in response");
-        }
-
-        const jsonContent = jsonMatch[1];
-        console.log("Extracted JSON content:", jsonContent);
-
-        const resultJson = JSON.parse(jsonContent);
-        console.log("Successfully parsed JSON:", resultJson);
-
-        await snapshot.ref.update({
-          status: "processed",
-          nutritional_report: resultJson,
-          processed_at: admin.firestore.Timestamp.now(),
-        });
-      } catch (error: unknown) {
-        if (error instanceof Error) {
-          console.error("JSON Parse Error:", error.message);
-        } else {
-          console.error("JSON Parse Error:", String(error));
-        }
-
-        // Log the first few characters to see what's causing the issue
-        console.error("First 100 characters of response:", responseText.substring(0, 100));
-
-        await snapshot.ref.update({
-          status: "error",
-          error_details: {
-            message: error instanceof Error ? error.message : String(error),
-            response_preview: responseText.substring(0, 100),
-          },
-        });
-        throw error;
-      }
+      await snapshot.ref.update({
+        status: "processed",
+        nutritional_report: resultJson,
+        processed_at: Timestamp.fromDate(new Date()),
+      });
 
       // Clean up: delete the local file to free up space
       fs.unlinkSync(tempFilePath);
@@ -306,6 +181,10 @@ export const onImageProcessingRecordCreated = onDocumentCreated(
       console.error("Failed to fetch or process the file:", error);
       await snapshot.ref.update({
         status: "error",
+        error_details: {
+          message: error instanceof Error ? error.message : String(error),
+          response_preview: error instanceof Error ? error.stack : String(error),
+        },
       });
       return null;
     }
@@ -334,65 +213,17 @@ export const onDigestionRecordCreated = onDocumentCreated(
       return;
     }
 
-    const genAi = new GoogleGenerativeAI("AIzaSyDCR7Ie019T6bR7tSUiASbr8RkMp4pI-jI");
-    const model = genAi.getGenerativeModel({ model: "gemini-1.5-flash" });
+    const aiService = AIService.getInstance();
 
     // Process based on the source
     if (data.analysis.source === "manual") {
       try {
-        const outputFormatDigestion = JSON.stringify(
-          {
-            analysis: {
-              color: "",
-              consistency: "",
-              shape: "",
-              size: "",
-              presence_of_blood: false,
-              presence_of_mucus: false,
-              bristol_stool_scale: 0,
-            },
-            concerns: [],
-            recommendations: [],
-            summary: "",
-          },
-          null,
-          2
-        );
-
-        const promptDigestion =
-          "As an AI medical expert specializing in gastroenterology, analyze the following stool characteristics and provide medical insights: " +
-          `Bristol Scale: Type ${data.analysis.bristol_scale}\n` +
-          `Color: ${data.analysis.color}\n` +
-          `Consistency: ${data.analysis.consistency}\n` +
-          `Shape: ${data.analysis.shape}\n` +
-          `Size: ${data.analysis.size}\n` +
-          `Presence of Blood: ${data.analysis.has_blood}\n` +
-          `Presence of Mucus: ${data.analysis.has_mucus}\n\n` +
-          "Based on these characteristics:\n" +
-          "1. Clinical Assessment: Evaluate the stool characteristics for any potential health implications.\n" +
-          "2. Medical Concerns: List any potential health concerns based on the provided characteristics.\n" +
-          "3. Recommendations: Provide relevant medical recommendations based on the analysis.\n" +
-          "Output: Respond ONLY with a JSON object that matches exactly the following template, without any additional text or explanations: " +
-          outputFormatDigestion +
-          " Ensure all responses are clinical and professional in nature. The analysis should focus on providing actionable medical insights while maintaining medical accuracy and professionalism.";
-
-        // Generate content using the model
-        const result = await model.generateContent([promptDigestion]);
-        const responseText = result.response.text();
-
-        // Extract the JSON part from the markdown response
-        const jsonMatch = responseText.match(/```json\n([\s\S]*?)\n```/);
-        if (!jsonMatch) {
-          throw new Error("Could not find JSON content in response");
-        }
-
-        const jsonContent = jsonMatch[1];
-        const resultJson = JSON.parse(jsonContent);
+        const resultJson = await aiService.analyzeDigestionData(data.analysis);
 
         // Update record with AI insights
         await docRef.update({
           status: "processed",
-          processed_at: admin.firestore.Timestamp.now(),
+          processed_at: Timestamp.fromDate(new Date()),
           // Keep the original analysis data but add AI recommendations
           ai_concerns: resultJson.concerns,
           ai_recommendations: resultJson.recommendations,
@@ -437,58 +268,12 @@ export const onDigestionRecordCreated = onDocumentCreated(
         const fileBuffer = fs.readFileSync(tempFilePath);
         const base64Encoded = fileBuffer.toString("base64");
 
-        const outputFormatDigestion = JSON.stringify(
-          {
-            analysis: {
-              color: "",
-              consistency: "",
-              shape: "",
-              size: "",
-              presence_of_blood: false,
-              presence_of_mucus: false,
-              bristol_stool_scale: 0,
-            },
-            concerns: [],
-            recommendations: [],
-            summary: "",
-          },
-          null,
-          2
-        );
-
-        const promptDigestion =
-          "As an AI medical expert specializing in gastroenterology, analyze the provided image of a bowel movement. " +
-          "Perform the following analysis with clinical precision: " +
-          "1. Visual Assessment: Evaluate the stool's physical characteristics including color, consistency, shape, and size. " +
-          "2. Clinical Indicators: Identify any concerning elements such as the presence of blood, mucus, or abnormal coloration. " +
-          "3. Bristol Stool Scale Classification: Determine the type according to the Bristol Stool Form Scale (1-7). " +
-          "4. Medical Concerns: List any potential health concerns based on the visual analysis. " +
-          "5. Recommendations: Provide relevant medical recommendations if concerns are identified. " +
-          "Output: Respond ONLY with a JSON object that matches exactly the following template, without any additional text or explanations: " +
-          outputFormatDigestion;
-
-        const image = {
-          inlineData: {
-            data: base64Encoded,
-            mimeType: "image/png",
-          },
-        };
-
-        const result = await model.generateContent([promptDigestion, image]);
-        const responseText = result.response.text();
-
-        const jsonMatch = responseText.match(/```json\n([\s\S]*?)\n```/);
-        if (!jsonMatch) {
-          throw new Error("Could not find JSON content in response");
-        }
-
-        const jsonContent = jsonMatch[1];
-        const resultJson = JSON.parse(jsonContent);
+        const resultJson = await aiService.analyzeDigestionImage(base64Encoded);
 
         // Update with new structure
         await docRef.update({
           status: "processed",
-          processed_at: admin.firestore.Timestamp.now(),
+          processed_at: Timestamp.fromDate(new Date()),
           analysis: {
             ...data.analysis,
             bristol_scale: resultJson.analysis.bristol_stool_scale.toString(),
@@ -518,5 +303,41 @@ export const onDigestionRecordCreated = onDocumentCreated(
     }
 
     return null;
+  }
+);
+
+export const generateWeeklySummaries = onSchedule(
+  {
+    schedule: "0 0 * * 0", // Every Sunday at midnight
+    timeZone: "UTC",
+    memory: "256MiB", // Adjust based on your needs
+    maxInstances: 1,
+  },
+  async (event: ScheduledEvent) => {
+    console.log("generateWeeklySummaries", event);
+    const lastWeek = Timestamp.fromDate(new Date(Date.now() - 7 * 24 * 60 * 60 * 1000));
+
+    try {
+      console.log("AUTH:", { auth });
+
+      // Get all users from Firebase Auth using the auth instance
+      const listUsersResult = await auth.listUsers();
+      const users = listUsersResult.users;
+
+      console.log(`Starting weekly analysis for ${users.length} users`);
+
+      for (const user of users) {
+        try {
+          await generateUserWeeklySummary(user.uid, lastWeek);
+          console.log(`Completed analysis for user ${user.uid}`);
+        } catch (error) {
+          console.error(`Error processing user ${user.uid}:`, error);
+        }
+      }
+
+      console.log("Weekly analysis completed");
+    } catch (error) {
+      console.error("Error fetching users:", error);
+    }
   }
 );

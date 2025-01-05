@@ -7,4 +7,35 @@ typings/
 
 # Node.js dependency directory
 node_modules/
-*.local
+
+# Environment variables
+.env
+.env.local
+.env.*
+.env-local
+
+.runtimeconfig.json
+
+
+# Firebase emulator logs
+firebase-debug.log
+firebase-debug.log.*
+
+#Firebase emulator logs
+firestore-debug.log
+firestore-debug.log.*
+
+#Pubsub emulator logs
+pubsub-debug.log
+pubsub-debug.log.*
+
+#UI emulator logs
+ui-debug.log
+ui-debug.log.*
+
+#Storage emulator logs
+storage-debug.log
+storage-debug.log.*
+
+# Emulator data
+emulator-data/
