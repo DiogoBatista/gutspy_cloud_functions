@@ -2,7 +2,7 @@
 import * as admin from "firebase-admin";
 import { getAuth } from "firebase-admin/auth";
 import { getFirestore, Timestamp } from "firebase-admin/firestore";
-import { onDocumentCreated } from "firebase-functions/v2/firestore";
+import { onDocumentCreated, onDocumentUpdated } from "firebase-functions/v2/firestore";
 import { onSchedule, ScheduledEvent } from "firebase-functions/v2/scheduler";
 import { onObjectFinalized } from "firebase-functions/v2/storage";
 import * as fs from "fs";
@@ -341,3 +341,87 @@ export const generateWeeklySummaries = onSchedule(
     }
   }
 );
+
+export const onMealRecordRetry = onDocumentUpdated("/meal_records/{recordId}", async (event) => {
+  const recordId = event.params.recordId;
+
+  if (!event.data) {
+    console.log("No event data available");
+    return;
+  }
+
+  const beforeData = event.data.before.data();
+  const afterData = event.data.after.data();
+
+  if (!beforeData || !afterData) {
+    console.log("No data associated with the event");
+    return;
+  }
+
+  // Only proceed if status changed from error to to_be_processed
+  if (beforeData.status !== "error" || afterData.status !== "to_be_processed") {
+    return;
+  }
+
+  console.log(`Retrying processing for record ${recordId}`);
+
+  // Check if necessary data is available
+  if (!afterData.filename || !afterData.userID || !afterData.type) {
+    console.log("Required data missing in the record");
+    return null;
+  }
+
+  // Update the status to "processing"
+  await event.data.after.ref.update({
+    status: "processing",
+  });
+
+  try {
+    const storage = admin.storage();
+    const bucket = storage.bucket("nutrisnap-96caf.appspot.com");
+    const type = afterData.type;
+    const filePath = `${afterData.userID}/${type}/${afterData.filename}`;
+
+    const file = bucket.file(filePath);
+    const [fileExists] = await file.exists();
+    if (!fileExists) {
+      console.log("File does not exist:", filePath);
+      return null;
+    }
+
+    // Download the file to a temporary location to process
+    const tempFilePath = path.join(os.tmpdir(), afterData.filename);
+    await file.download({ destination: tempFilePath });
+    console.log("File downloaded locally to", tempFilePath);
+
+    // Convert file to base64
+    const fileBuffer = fs.readFileSync(tempFilePath);
+    const base64Encoded = fileBuffer.toString("base64");
+    console.log("File converted to Base64");
+
+    // Use AIService to analyze the image
+    const aiService = AIService.getInstance();
+    const resultJson = await aiService.analyzeMealImage(base64Encoded);
+
+    await event.data.after.ref.update({
+      status: "processed",
+      nutritional_report: resultJson,
+      processed_at: Timestamp.fromDate(new Date()),
+    });
+
+    // Clean up: delete the local file to free up space
+    fs.unlinkSync(tempFilePath);
+
+    return null;
+  } catch (error) {
+    console.error("Failed to fetch or process the file:", error);
+    await event.data.after.ref.update({
+      status: "error",
+      error_details: {
+        message: error instanceof Error ? error.message : String(error),
+        response_preview: error instanceof Error ? error.stack : String(error),
+      },
+    });
+    return null;
+  }
+});
