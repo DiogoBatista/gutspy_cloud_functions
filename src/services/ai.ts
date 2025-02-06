@@ -94,7 +94,7 @@ export class AIService {
    */
   private constructor() {
     const genAi = new GoogleGenerativeAI(validatedApiKey);
-    this.model = genAi.getGenerativeModel({ model: "gemini-1.5-flash" });
+    this.model = genAi.getGenerativeModel({ model: "gemini-2.0-flash" });
   }
 
   /**
