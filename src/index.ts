@@ -5,9 +5,11 @@ import { getFirestore, Timestamp } from "firebase-admin/firestore";
 import { onDocumentCreated, onDocumentUpdated } from "firebase-functions/v2/firestore";
 import { onSchedule, ScheduledEvent } from "firebase-functions/v2/scheduler";
 import { onObjectFinalized } from "firebase-functions/v2/storage";
+import { beforeUserCreated } from "firebase-functions/v2/identity";
 import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
+import axios from "axios";
 import { AIService } from "./services/ai";
 import { generateUserWeeklySummary } from "./user";
 
@@ -423,5 +425,52 @@ export const onMealRecordRetry = onDocumentUpdated("/meal_records/{recordId}", a
       },
     });
     return null;
+  }
+});
+
+// Cloud Function to handle new user creation
+export const onUserCreated = beforeUserCreated(async (event) => {
+  const user = event.data;
+  if (!user) {
+    console.log("No user data in event");
+    return;
+  }
+
+  try {
+    // Send notification to Kit
+    const kitApiKey = process.env.KIT_API_KEY;
+    if (kitApiKey) {
+      await axios.post(
+        "https://api.kit.com/v4/subscribers",
+        {
+          email_address: user.email,
+          first_name: user.displayName?.split(" ")[0] || "",
+          state: "active",
+          fields: {
+            "Last name": user.displayName?.split(" ").slice(1).join(" ") || "",
+            Source: "Firebase Auth",
+            "User ID": user.uid,
+          },
+        },
+        {
+          headers: {
+            "X-Kit-Api-Key": kitApiKey,
+            "Content-Type": "application/json",
+          },
+        }
+      );
+      console.log("Successfully added user to Kit:", user.email);
+    }
+
+    // Send notification to Slack
+    const slackWebhookUrl = process.env.SLACK_WEBHOOK_URL;
+    if (slackWebhookUrl) {
+      await axios.post(slackWebhookUrl, {
+        text: `🎉 New user signed up!\nEmail: ${user.email}\nUser ID: ${user.uid}\nTimestamp: ${new Date().toISOString()}`,
+      });
+      console.log("Successfully sent notification to Slack");
+    }
+  } catch (error) {
+    console.error("Error sending notifications:", error);
   }
 });
