@@ -11,6 +11,7 @@ import * as os from "os";
 import * as path from "path";
 import axios from "axios";
 import { AIService } from "./services/ai";
+import { SlackService } from "./services/slack";
 import { generateUserWeeklySummary } from "./user";
 
 admin.initializeApp({
@@ -175,6 +176,16 @@ export const onImageProcessingRecordCreated = onDocumentCreated(
         processed_at: Timestamp.fromDate(new Date()),
       });
 
+      // Send Slack notification with meal name
+      try {
+        const slackService = SlackService.getInstance();
+        const mealName = resultJson?.image_recognition?.name;
+        await slackService.notifyMealCreated(newData.userID, recordId, mealName);
+      } catch (error) {
+        console.error("Failed to send Slack notification for meal record:", error);
+        // Continue with processing even if Slack notification fails
+      }
+
       // Clean up: delete the local file to free up space
       fs.unlinkSync(tempFilePath);
 
@@ -213,6 +224,15 @@ export const onDigestionRecordCreated = onDocumentCreated(
     if (!data) {
       console.log("No data associated with the event");
       return;
+    }
+
+    // Send Slack notification for all digestion records
+    try {
+      const slackService = SlackService.getInstance();
+      await slackService.notifyDigestionCreated(data.userID, docRef.id, data.analysis.source);
+    } catch (error) {
+      console.error("Failed to send Slack notification for digestion record:", error);
+      // Continue with processing even if Slack notification fails
     }
 
     const aiService = AIService.getInstance();
@@ -320,8 +340,6 @@ export const generateWeeklySummaries = onSchedule(
     const lastWeek = Timestamp.fromDate(new Date(Date.now() - 7 * 24 * 60 * 60 * 1000));
 
     try {
-      console.log("AUTH:", { auth });
-
       // Get all users from Firebase Auth using the auth instance
       const listUsersResult = await auth.listUsers();
       const users = listUsersResult.users;
@@ -463,12 +481,16 @@ export const onUserCreated = beforeUserCreated(async (event) => {
     }
 
     // Send notification to Slack
-    const slackWebhookUrl = process.env.SLACK_WEBHOOK_URL;
-    if (slackWebhookUrl) {
-      await axios.post(slackWebhookUrl, {
-        text: `🎉 New user signed up!\nEmail: ${user.email}\nUser ID: ${user.uid}\nTimestamp: ${new Date().toISOString()}`,
-      });
+    try {
+      const slackService = SlackService.getInstance();
+      await slackService.notifyUserCreated(
+        user.email || "No email",
+        user.uid,
+        user.displayName || undefined
+      );
       console.log("Successfully sent notification to Slack");
+    } catch (error) {
+      console.error("Failed to send Slack notification:", error);
     }
   } catch (error) {
     console.error("Error sending notifications:", error);

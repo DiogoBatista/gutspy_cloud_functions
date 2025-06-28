@@ -2,9 +2,9 @@ import * as admin from "firebase-admin";
 import { getFirestore, Timestamp } from "firebase-admin/firestore";
 import { analyzeDigestion, fetchDigestionRecords } from "./digestion";
 import { analyzeNutrition, fetchMealRecords } from "./meal";
+import { AIService } from "./services/ai";
 import { WeeklySummary } from "./types";
 import { analyzeWaterIntake, fetchWaterRecords } from "./water";
-import { AIService } from "./services/ai";
 
 export interface UserGoals {
   calories: number;
@@ -57,6 +57,26 @@ export async function fetchUserGoals(userId: string): Promise<UserGoals> {
 }
 
 /**
+ * Checks if there's sufficient data to generate a meaningful weekly summary
+ * @param {any[]} mealRecords - Array of meal records
+ * @param {any[]} digestionRecords - Array of digestion records
+ * @return {boolean} True if there's sufficient data, false otherwise
+ */
+function hasSufficientData(mealRecords: any[], digestionRecords: any[]): boolean {
+  // Define minimum thresholds for meaningful analysis
+  const MIN_MEAL_RECORDS = 1; // At least 1 meal records
+  const MIN_DIGESTION_RECORDS = 1; // At least 1 digestion records
+
+  const hasEnoughMeals = mealRecords.length >= MIN_MEAL_RECORDS;
+  const hasEnoughDigestion = digestionRecords.length >= MIN_DIGESTION_RECORDS;
+
+  // Require at least two types of data to be present
+  const dataTypesCount = [hasEnoughMeals, hasEnoughDigestion].filter(Boolean).length;
+
+  return dataTypesCount >= 2;
+}
+
+/**
  * Generates a weekly summary for a specific user
  * @param {string} userId - The ID of the user
  * @param {admin.firestore.Timestamp} startDate - The start date for the summary period
@@ -71,6 +91,15 @@ export async function generateUserWeeklySummary(userId: string, startDate: Times
     fetchMealRecords(userId, startDate, endDate),
     fetchDigestionRecords(userId, startDate, endDate),
   ]);
+
+  // Check if there's sufficient data to generate a meaningful summary
+  if (!hasSufficientData(mealRecords, digestionRecords)) {
+    console.log(`Insufficient data for weekly summary for user ${userId}. Skipping AI analysis.`);
+    console.log(
+      `Data counts - Meals: ${mealRecords.length}, Digestion: ${digestionRecords.length}`
+    );
+    return;
+  }
 
   // Generate analyses using user goals
   const waterAnalysis = await analyzeWaterIntake(waterRecords, userGoals);
