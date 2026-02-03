@@ -306,6 +306,30 @@ export const onImageProcessingRecordCreated = onDocumentCreated(
   }
 );
 
+// Notify Slack when a symptom log is created
+export const onSymptomLogCreated = onDocumentCreated(
+  "/symptom_logs/{symptomLogId}",
+  async (event) => {
+    const snapshot = event.data;
+    if (!snapshot) return;
+
+    const data = snapshot.data();
+    if (!data?.userID) return;
+
+    try {
+      const slackService = SlackService.getInstance();
+      await slackService.notifySymptomCreated(
+        data.userID,
+        snapshot.ref.id,
+        data.symptom_label ?? "Symptom",
+        data.severity
+      );
+    } catch (error) {
+      console.error("Failed to send Slack notification for symptom log:", error);
+    }
+  }
+);
+
 // New function to handle digestion record processing
 export const onDigestionRecordCreated = onDocumentCreated(
   "/digestion_records/{recordId}",

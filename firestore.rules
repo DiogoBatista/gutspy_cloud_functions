@@ -2,6 +2,14 @@ rules_version = '2';
 
 service cloud.firestore {
   match /databases/{database}/documents {
+    match /symptom_logs/{id} {
+      allow read, update, delete: if request.auth != null && resource.data.userID == request.auth.uid;
+      allow create: if request.auth != null && request.resource.data.userID == request.auth.uid;
+    }
+    match /user_custom_symptoms/{id} {
+      allow read, update, delete: if request.auth != null && resource.data.userID == request.auth.uid;
+      allow create: if request.auth != null && request.resource.data.userID == request.auth.uid;
+    }
     match /{document=**} {
       allow read, write: if (request.auth != null)
                         && (request.auth.token.firebase.sign_in_provider == 'google.com'

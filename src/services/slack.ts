@@ -1,6 +1,7 @@
 import * as admin from "firebase-admin";
 
 /** True when Cloud Functions are running in the Firebase Emulator (firebase emulators:start). */
+/** @return {boolean} True when Cloud Functions are running in the Firebase Emulator (firebase emulators:start). */
 function isEmulator(): boolean {
   return process.env.FUNCTIONS_EMULATOR === "true";
 }
@@ -23,6 +24,11 @@ export class SlackService {
     this.webhookUrl = process.env.SLACK_WEBHOOK_URL || "";
   }
 
+  /**
+   * Prefixes text with the emulator prefix if running in emulator
+   * @param {string} text - The text to prefix
+   * @return {string} The prefixed text
+   */
   private prefix(text: string): string {
     return isEmulator() ? EMULATOR_PREFIX + text : text;
   }
@@ -139,6 +145,65 @@ export class SlackService {
       await this.sendToSlack(message);
     } catch (error) {
       console.error("Failed to send digestion notification to Slack:", error);
+    }
+  }
+
+  /**
+   * Sends a notification to Slack when a symptom log is created
+   * @param {string} userId - The user ID who created the symptom log
+   * @param {string} symptomLogId - The symptom log document ID
+   * @param {string} symptomLabel - The display name of the symptom (e.g. "Bloating", "Cramps")
+   * @param {number} [severity] - Optional severity 0–3 (None, Mild, Moderate, Severe)
+   */
+  async notifySymptomCreated(
+    userId: string,
+    symptomLogId: string,
+    symptomLabel: string,
+    severity?: number
+  ): Promise<void> {
+    if (!this.webhookUrl) {
+      console.log("Slack webhook URL not configured, skipping symptom notification");
+      return;
+    }
+
+    try {
+      let userEmail = "Unknown user";
+      try {
+        const userRecord = await admin.auth().getUser(userId);
+        userEmail = userRecord.email || "Unknown user";
+      } catch (error) {
+        console.log("Could not fetch user info for Slack notification:", error);
+      }
+
+      const severityLabels = ["None", "Mild", "Moderate", "Severe"];
+      const severityText =
+        severity != null ? severityLabels[severity] ?? `Level ${severity}` : "—";
+      const body = `*New symptom logged!* 📋\n\n*User:* ${userEmail}\n*User ID:* \`${userId}\`\n*Symptom:* ${symptomLabel}\n*Severity:* ${severityText}\n*Record ID:* \`${symptomLogId}\`\n*Time:* ${new Date().toLocaleString()}`;
+      const message = {
+        text: this.prefix("📋 New symptom logged!"),
+        blocks: [
+          {
+            type: "section",
+            text: {
+              type: "mrkdwn",
+              text: this.prefix(body),
+            },
+          },
+          {
+            type: "context",
+            elements: [
+              {
+                type: "mrkdwn",
+                text: isEmulator() ? "GutSpy App Activity (emulator)" : "GutSpy App Activity",
+              },
+            ],
+          },
+        ],
+      };
+
+      await this.sendToSlack(message);
+    } catch (error) {
+      console.error("Failed to send symptom notification to Slack:", error);
     }
   }
 
