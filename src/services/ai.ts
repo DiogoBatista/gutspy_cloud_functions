@@ -272,13 +272,15 @@ export class AIService {
     );
 
     const prompt =
-      "As an AI medical expert specializing in gastroenterology, analyze the provided image of a bowel movement. " +
-      "Perform the following analysis with clinical precision: " +
-      "1. Visual Assessment: Evaluate the stool's physical characteristics including color, consistency, shape, and size. " +
-      "2. Clinical Indicators: Identify any concerning elements such as the presence of blood, mucus, or abnormal coloration. " +
-      "3. Bristol Stool Scale Classification: Determine the type according to the Bristol Stool Form Scale (1-7). " +
-      "4. Medical Concerns: List any potential health concerns based on the visual analysis. " +
-      "5. Recommendations: Provide relevant medical recommendations if concerns are identified. " +
+      "You are an assistant providing general information about stool appearance. Do not diagnose. " +
+      "Use language such as 'may be consistent with', 'often associated with'. Never claim cures, certainty, or medical authority. " +
+      "Always include a short, gentle safety note in recommendations (e.g. 'This is not medical advice; discuss with a healthcare provider if concerned.'). " +
+      "If you identify blood or severe abnormality, prioritize 'seek medical advice' in recommendations. " +
+      "Analyze the provided image: " +
+      "1. Visual Assessment: Evaluate color, consistency, shape, size; identify any blood or mucus. " +
+      "2. Bristol Stool Scale: Classify 1-7. " +
+      "3. Concerns: List potential concerns using 'may be consistent with' / 'often associated with'; no diagnosis. " +
+      "4. Recommendations: If blood or severe abnormality, prioritize seeking medical advice; otherwise lifestyle/hydration/fiber. " +
       "Output: Respond ONLY with a JSON object that matches exactly the following template, without any additional text or explanations: " +
       outputFormat;
 
@@ -326,7 +328,11 @@ export class AIService {
     );
 
     const prompt =
-      "As an AI medical expert specializing in gastroenterology, analyze the following stool characteristics and provide medical insights: " +
+      "You are an assistant providing general information about stool characteristics. Do not diagnose. " +
+      "Use language such as 'may be consistent with', 'often associated with'. Never claim cures, certainty, or medical authority. " +
+      "Always include a short, gentle safety note (e.g. 'This is not medical advice; discuss with a healthcare provider if concerned.'). " +
+      "If presence of blood is true OR the user reports severe pain, prioritize 'seek medical advice' guidance over lifestyle tips. " +
+      "Analyze the following stool characteristics:\n" +
       `Bristol Scale: Type ${data.bristol_scale}\n` +
       `Color: ${data.color}\n` +
       `Consistency: ${data.consistency}\n` +
@@ -334,13 +340,10 @@ export class AIService {
       `Size: ${data.size}\n` +
       `Presence of Blood: ${data.has_blood}\n` +
       `Presence of Mucus: ${data.has_mucus}\n\n` +
-      "Based on these characteristics:\n" +
-      "1. Clinical Assessment: Evaluate the stool characteristics for any potential health implications.\n" +
-      "2. Medical Concerns: List any potential health concerns based on the provided characteristics.\n" +
-      "3. Recommendations: Provide relevant medical recommendations based on the analysis.\n" +
+      "1. List potential concerns (use 'may be consistent with' / 'often associated with'; no diagnosis). " +
+      "2. List recommendations (lifestyle, hydration, fiber; if blood or severe pain, prioritize seeking medical advice). " +
       "Output: Respond ONLY with a JSON object that matches exactly the following template, without any additional text or explanations: " +
-      outputFormat +
-      " Ensure all responses are clinical and professional in nature. The analysis should focus on providing actionable medical insights while maintaining medical accuracy and professionalism.";
+      outputFormat;
 
     return this.analyzeText<DigestionAnalysisResult>(prompt);
   }

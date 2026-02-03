@@ -6,6 +6,7 @@ import { onDocumentCreated, onDocumentUpdated } from "firebase-functions/v2/fire
 import { onSchedule, ScheduledEvent } from "firebase-functions/v2/scheduler";
 import { onObjectFinalized } from "firebase-functions/v2/storage";
 import { beforeUserCreated } from "firebase-functions/v2/identity";
+import { onCall, HttpsError } from "firebase-functions/v2/https";
 import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
@@ -13,6 +14,7 @@ import axios from "axios";
 import { AIService } from "./services/ai";
 import { SlackService } from "./services/slack";
 import { generateUserWeeklySummary } from "./user";
+import type { DocumentReference } from "firebase-admin/firestore";
 
 admin.initializeApp({
   projectId: "nutrisnap-96caf",
@@ -22,9 +24,73 @@ admin.initializeApp({
 const db = getFirestore();
 const auth = getAuth();
 
-// Debug logging
-// console.log("Firebase Admin initialized with config:", admin.app().options);
-// console.log("Firestore instance:", db);
+const BUCKET_NAME = "nutrisnap-96caf.appspot.com";
+
+/**
+ * Shared: run AI image analysis on a digestion record and update the doc.
+ * @param {DocumentReference} docRef Firestore document reference for the digestion record
+ * @param {Object} data Record data with userID, filename, and optional analysis
+ */
+async function runDigestionImageAnalysis(
+  docRef: DocumentReference,
+  data: { userID: string; filename: string; analysis?: Record<string, unknown> }
+): Promise<void> {
+  const filePath = `${data.userID}/digestions/${data.filename}`;
+  const bucket = admin.storage().bucket(BUCKET_NAME);
+  const file = bucket.file(filePath);
+  const [fileExists] = await file.exists();
+  if (!fileExists) {
+    await docRef.update({
+      status: "failed",
+      error_details: { message: "File does not exist" },
+    });
+    return;
+  }
+  await docRef.update({ status: "processing" });
+  const tempFilePath = path.join(os.tmpdir(), data.filename);
+  try {
+    await file.download({ destination: tempFilePath });
+    const fileBuffer = fs.readFileSync(tempFilePath);
+    const base64Encoded = fileBuffer.toString("base64");
+    const aiService = AIService.getInstance();
+    const resultJson = await aiService.analyzeDigestionImage(base64Encoded);
+
+    console.log("resultJson", resultJson);
+
+    await docRef.update({
+      status: "processed",
+      processed_at: Timestamp.fromDate(new Date()),
+      analysis: {
+        ...(data.analysis || {}),
+        bristol_scale: resultJson.analysis.bristol_stool_scale.toString(),
+        color: resultJson.analysis.color,
+        consistency: resultJson.analysis.consistency,
+        shape: resultJson.analysis.shape,
+        size: resultJson.analysis.size,
+        has_blood: resultJson.analysis.presence_of_blood,
+        has_mucus: resultJson.analysis.presence_of_mucus,
+        source: "ai",
+      },
+      ai_concerns: resultJson.concerns,
+      ai_recommendations: resultJson.recommendations,
+      notes: resultJson.summary,
+    });
+  } catch (error) {
+    console.error("Failed to process digestion image:", error);
+    await docRef.update({
+      status: "failed",
+      error_details: {
+        message: error instanceof Error ? error.message : String(error),
+      },
+    });
+  } finally {
+    try {
+      if (fs.existsSync(tempFilePath)) fs.unlinkSync(tempFilePath);
+    } catch {
+      // ignore cleanup errors
+    }
+  }
+}
 
 // Start writing functions
 // https://firebase.google.com/docs/functions/typescript
@@ -37,8 +103,8 @@ export const fileCreated = onObjectFinalized(
     const filePath = event.data.name; // File path in the bucket
     if (!filePath) return console.log("No file path found");
 
-    // Split the filePath to get userID, type and filename
-    const pathSegments = filePath.split("/");
+    // Split the filePath to get userID, type and filename (normalize: no leading/trailing slashes)
+    const pathSegments = filePath.split("/").filter(Boolean);
     if (pathSegments.length < 3) {
       return console.log("Unexpected file path structure:", filePath);
     }
@@ -74,6 +140,42 @@ export const fileCreated = onObjectFinalized(
 
     try {
       if (type === "digestions") {
+        // BmItem uploads as recordId_timestamp.jpg for existing log; do not create a new doc.
+        if (filename.includes("_")) {
+          const candidateRecordId = filename.split("_")[0];
+          const existingDoc = await db.collection(collection).doc(candidateRecordId).get();
+          const existingData = existingDoc.data();
+          const docUserIdField = existingData && (existingData as { userId?: string }).userId;
+          const docUserID = existingData && (existingData.userID ?? docUserIdField);
+          const belongsToUser = docUserID === userID;
+          console.log("Digestion existing-check:", {
+            candidateRecordId,
+            exists: existingDoc.exists,
+            docUserID: docUserID ?? "(none)",
+            pathUserID: userID,
+            belongsToUser,
+          });
+          if (existingDoc.exists && existingData && belongsToUser) {
+            await existingDoc.ref.update({
+              filename,
+              status: "to_be_processed",
+              analysis: { source: "ai" },
+            });
+            console.log("Digestion: attached photo to existing record", candidateRecordId);
+            // Run AI here so the file is guaranteed to exist (same trigger); app's on-demand call will get cached.
+            const mergedData = {
+              ...existingData,
+              userID,
+              filename,
+              analysis: { ...(existingData.analysis || {}), source: "ai" as const },
+            };
+
+            console.log("mergedData", mergedData);
+            await runDigestionImageAnalysis(existingDoc.ref, mergedData);
+            return;
+          }
+        }
+
         const digestionRecordData = {
           userID: userID,
           filename: filename,
@@ -239,14 +341,18 @@ export const onDigestionRecordCreated = onDocumentCreated(
 
     // Process based on the source
     if (data.analysis.source === "manual") {
+      // New app sends request_ai_on_create: false to skip auto-AI (on-demand only)
+      if (data.request_ai_on_create === false) {
+        await docRef.update({ status: "processed" });
+        return null;
+      }
       try {
         const resultJson = await aiService.analyzeDigestionData(data.analysis);
 
-        // Update record with AI insights
+        // Update record with AI insights (legacy app behavior)
         await docRef.update({
           status: "processed",
           processed_at: Timestamp.fromDate(new Date()),
-          // Keep the original analysis data but add AI recommendations
           ai_concerns: resultJson.concerns,
           ai_recommendations: resultJson.recommendations,
         });
@@ -259,74 +365,103 @@ export const onDigestionRecordCreated = onDocumentCreated(
           },
         });
       }
-    } else if (data.filename) {
-      // Process AI image analysis
-      try {
-        const storage = admin.storage();
-        const bucket = storage.bucket("nutrisnap-96caf.appspot.com");
-        const filePath = `${data.userID}/digestions/${data.filename}`;
-
-        const file = bucket.file(filePath);
-        const [fileExists] = await file.exists();
-
-        if (!fileExists) {
-          await docRef.update({
-            status: "failed",
-            error_details: {
-              message: "File does not exist",
-            },
-          });
-          return null;
-        }
-
-        // update the status to processing
-        await docRef.update({
-          status: "processing",
-        });
-
-        // Download and process image
-        const tempFilePath = path.join(os.tmpdir(), data.filename);
-        await file.download({ destination: tempFilePath });
-        const fileBuffer = fs.readFileSync(tempFilePath);
-        const base64Encoded = fileBuffer.toString("base64");
-
-        const resultJson = await aiService.analyzeDigestionImage(base64Encoded);
-
-        // Update with new structure
-        await docRef.update({
-          status: "processed",
-          processed_at: Timestamp.fromDate(new Date()),
-          analysis: {
-            ...data.analysis,
-            bristol_scale: resultJson.analysis.bristol_stool_scale.toString(),
-            color: resultJson.analysis.color,
-            consistency: resultJson.analysis.consistency,
-            shape: resultJson.analysis.shape,
-            size: resultJson.analysis.size,
-            has_blood: resultJson.analysis.presence_of_blood,
-            has_mucus: resultJson.analysis.presence_of_mucus,
-            source: "ai",
-          },
-          ai_concerns: resultJson.concerns,
-          ai_recommendations: resultJson.recommendations,
-        });
-
-        // Clean up temp file
-        fs.unlinkSync(tempFilePath);
-      } catch (error) {
-        console.error("Failed to process AI record:", error);
-        await docRef.update({
-          status: "failed",
-          error_details: {
-            message: error instanceof Error ? error.message : String(error),
-          },
-        });
-      }
+    } else if (data.filename && data.userID) {
+      await runDigestionImageAnalysis(docRef, {
+        userID: data.userID,
+        filename: data.filename,
+        analysis: data.analysis as Record<string, unknown> | undefined,
+      });
     }
 
     return null;
   }
 );
+
+/** On-demand AI explain (premium). Called by app when user taps "Explain this log". */
+export const requestDigestionAiExplain = onCall({ enforceAppCheck: false }, async (request) => {
+  if (!request.auth) {
+    throw new HttpsError("unauthenticated", "Must be signed in");
+  }
+  const { recordId } = request.data as { recordId: string };
+  if (!recordId || typeof recordId !== "string") {
+    throw new HttpsError("invalid-argument", "recordId is required");
+  }
+  const docSnap = await db.collection("digestion_records").doc(recordId).get();
+  if (!docSnap.exists) {
+    throw new HttpsError("not-found", "Record not found");
+  }
+  const data = docSnap.data();
+  if (!data || data.userID !== request.auth.uid) {
+    throw new HttpsError("permission-denied", "Not your record");
+  }
+  if (data.ai_concerns?.length && data.ai_recommendations?.length) {
+    return { cached: true };
+  }
+  const aiService = AIService.getInstance();
+  const resultJson = await aiService.analyzeDigestionData(data.analysis);
+  await docSnap.ref.update({
+    status: "processed",
+    processed_at: Timestamp.fromDate(new Date()),
+    ai_concerns: resultJson.concerns,
+    ai_recommendations: resultJson.recommendations,
+  });
+  return { cached: false };
+});
+
+/** On-demand image analysis (premium). Called by app when user taps "Scan photo". */
+export const requestDigestionImageAnalysis = onCall({ enforceAppCheck: false }, async (request) => {
+  console.log("requestDigestionImageAnalysis", request);
+  if (!request.auth) {
+    throw new HttpsError("unauthenticated", "Must be signed in");
+  }
+  const { recordId, filePath } = request.data as { recordId: string; filePath: string };
+  if (!recordId || !filePath) {
+    throw new HttpsError("invalid-argument", "recordId and filePath are required");
+  }
+  const docSnap = await db.collection("digestion_records").doc(recordId).get();
+  if (!docSnap.exists) {
+    throw new HttpsError("not-found", "Record not found");
+  }
+  const data = docSnap.data();
+  if (!data || data.userID !== request.auth.uid) {
+    throw new HttpsError("permission-denied", "Not your record");
+  }
+  if (data.ai_concerns?.length && data.ai_recommendations?.length) {
+    return { cached: true };
+  }
+  const bucket = admin.storage().bucket(BUCKET_NAME);
+  const file = bucket.file(filePath);
+  const [fileExists] = await file.exists();
+  if (!fileExists) {
+    // Storage trigger may not have written the file yet; AI will run in fileCreated. Tell app to wait.
+    return { processing: true };
+  }
+  const [buffer] = await file.download();
+  const base64Encoded = buffer.toString("base64");
+  const aiService = AIService.getInstance();
+  const resultJson = await aiService.analyzeDigestionImage(base64Encoded);
+
+  console.log("resultJson", resultJson);
+
+  await docSnap.ref.update({
+    status: "processed",
+    processed_at: Timestamp.fromDate(new Date()),
+    analysis: {
+      ...(data.analysis || {}),
+      bristol_scale: resultJson.analysis.bristol_stool_scale.toString(),
+      color: resultJson.analysis.color,
+      consistency: resultJson.analysis.consistency,
+      shape: resultJson.analysis.shape,
+      size: resultJson.analysis.size,
+      has_blood: resultJson.analysis.presence_of_blood,
+      has_mucus: resultJson.analysis.presence_of_mucus,
+      source: "ai",
+    },
+    ai_concerns: resultJson.concerns,
+    ai_recommendations: resultJson.recommendations,
+  });
+  return { cached: false };
+});
 
 export const generateWeeklySummaries = onSchedule(
   {

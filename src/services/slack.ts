@@ -1,5 +1,13 @@
 import * as admin from "firebase-admin";
 
+/** True when Cloud Functions are running in the Firebase Emulator (firebase emulators:start). */
+function isEmulator(): boolean {
+  return process.env.FUNCTIONS_EMULATOR === "true";
+}
+
+/** Prefix for Slack messages when running in emulator so they are clearly test traffic. */
+const EMULATOR_PREFIX = "[EMULATOR] ";
+
 /**
  * Service for sending Slack notifications when users create meal and digestion records
  */
@@ -13,6 +21,10 @@ export class SlackService {
   private constructor() {
     // Get Slack webhook URL from environment variables
     this.webhookUrl = process.env.SLACK_WEBHOOK_URL || "";
+  }
+
+  private prefix(text: string): string {
+    return isEmulator() ? EMULATOR_PREFIX + text : text;
   }
 
   /**
@@ -48,14 +60,15 @@ export class SlackService {
         console.log("Could not fetch user info for Slack notification:", error);
       }
 
+      const body = `*New meal recorded!* 🍽️\n\n*User:* ${userEmail}\n*User ID:* \`${userId}\`\n*Meal ID:* \`${mealId}\`${mealName ? `\n*Meal:* ${mealName}` : ""}\n*Time:* ${new Date().toLocaleString()}`;
       const message = {
-        text: "🍽️ New meal recorded!",
+        text: this.prefix("🍽️ New meal recorded!"),
         blocks: [
           {
             type: "section",
             text: {
               type: "mrkdwn",
-              text: `*New meal recorded!* 🍽️\n\n*User:* ${userEmail}\n*User ID:* \`${userId}\`\n*Meal ID:* \`${mealId}\`${mealName ? `\n*Meal:* ${mealName}` : ""}\n*Time:* ${new Date().toLocaleString()}`,
+              text: this.prefix(body),
             },
           },
           {
@@ -63,7 +76,7 @@ export class SlackService {
             elements: [
               {
                 type: "mrkdwn",
-                text: "GutSpy App Activity",
+                text: isEmulator() ? "GutSpy App Activity (emulator)" : "GutSpy App Activity",
               },
             ],
           },
@@ -100,15 +113,15 @@ export class SlackService {
 
       const emoji = source === "ai" ? "🤖" : "✍️";
       const sourceText = source === "ai" ? "AI Analysis" : "Manual Entry";
-
+      const body = `*New digestion record!* 💩\n\n*User:* ${userEmail}\n*User ID:* \`${userId}\`\n*Record ID:* \`${digestionId}\`\n*Source:* ${emoji} ${sourceText}\n*Time:* ${new Date().toLocaleString()}`;
       const message = {
-        text: "💩 New digestion record!",
+        text: this.prefix("💩 New digestion record!"),
         blocks: [
           {
             type: "section",
             text: {
               type: "mrkdwn",
-              text: `*New digestion record!* 💩\n\n*User:* ${userEmail}\n*User ID:* \`${userId}\`\n*Record ID:* \`${digestionId}\`\n*Source:* ${emoji} ${sourceText}\n*Time:* ${new Date().toLocaleString()}`,
+              text: this.prefix(body),
             },
           },
           {
@@ -116,7 +129,7 @@ export class SlackService {
             elements: [
               {
                 type: "mrkdwn",
-                text: "GutSpy App Activity",
+                text: isEmulator() ? "GutSpy App Activity (emulator)" : "GutSpy App Activity",
               },
             ],
           },
@@ -142,14 +155,15 @@ export class SlackService {
     }
 
     try {
+      const body = `*New user signed up!* 🎉\n\n*Email:* ${userEmail}\n*User ID:* \`${userId}\`${displayName ? `\n*Name:* ${displayName}` : ""}\n*Time:* ${new Date().toLocaleString()}`;
       const message = {
-        text: "🎉 New user signed up!",
+        text: this.prefix("🎉 New user signed up!"),
         blocks: [
           {
             type: "section",
             text: {
               type: "mrkdwn",
-              text: `*New user signed up!* 🎉\n\n*Email:* ${userEmail}\n*User ID:* \`${userId}\`${displayName ? `\n*Name:* ${displayName}` : ""}\n*Time:* ${new Date().toLocaleString()}`,
+              text: this.prefix(body),
             },
           },
           {
@@ -157,7 +171,7 @@ export class SlackService {
             elements: [
               {
                 type: "mrkdwn",
-                text: "GutSpy App Activity",
+                text: isEmulator() ? "GutSpy App Activity (emulator)" : "GutSpy App Activity",
               },
             ],
           },
