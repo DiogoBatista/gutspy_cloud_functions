@@ -353,14 +353,16 @@ export const onImageProcessingRecordCreated = onDocumentCreated(
         processed_at: Timestamp.fromDate(new Date()),
       });
 
-      // Send Slack notification with meal name
-      try {
-        const slackService = SlackService.getInstance();
-        const mealName = resultJson?.image_recognition?.name;
-        await slackService.notifyMealCreated(newData.userID, recordId, mealName);
-      } catch (error) {
-        console.error("Failed to send Slack notification for meal record:", error);
-        // Continue with processing even if Slack notification fails
+      // Send Slack notification with meal name (skip when seed data)
+      if (newData.skip_slack !== true) {
+        try {
+          const slackService = SlackService.getInstance();
+          const mealName = resultJson?.image_recognition?.name;
+          await slackService.notifyMealCreated(newData.userID, recordId, mealName);
+        } catch (error) {
+          console.error("Failed to send Slack notification for meal record:", error);
+          // Continue with processing even if Slack notification fails
+        }
       }
 
       // Clean up: delete the local file to free up space
@@ -390,6 +392,7 @@ export const onSymptomLogCreated = onDocumentCreated(
 
     const data = snapshot.data();
     if (!data?.userID) return;
+    if (data.skip_slack === true) return;
 
     try {
       const slackService = SlackService.getInstance();
@@ -427,13 +430,15 @@ export const onDigestionRecordCreated = onDocumentCreated(
       return;
     }
 
-    // Send Slack notification for all digestion records
-    try {
-      const slackService = SlackService.getInstance();
-      await slackService.notifyDigestionCreated(data.userID, docRef.id, data.analysis.source);
-    } catch (error) {
-      console.error("Failed to send Slack notification for digestion record:", error);
-      // Continue with processing even if Slack notification fails
+    // Send Slack notification for all digestion records (skip when seed data)
+    if (data.skip_slack !== true) {
+      try {
+        const slackService = SlackService.getInstance();
+        await slackService.notifyDigestionCreated(data.userID, docRef.id, data.analysis.source);
+      } catch (error) {
+        console.error("Failed to send Slack notification for digestion record:", error);
+        // Continue with processing even if Slack notification fails
+      }
     }
 
     const aiService = AIService.getInstance();

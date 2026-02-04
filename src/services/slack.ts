@@ -177,7 +177,7 @@ export class SlackService {
 
       const severityLabels = ["None", "Mild", "Moderate", "Severe"];
       const severityText =
-        severity != null ? severityLabels[severity] ?? `Level ${severity}` : "—";
+        severity != null ? (severityLabels[severity] ?? `Level ${severity}`) : "—";
       const body = `*New symptom logged!* 📋\n\n*User:* ${userEmail}\n*User ID:* \`${userId}\`\n*Symptom:* ${symptomLabel}\n*Severity:* ${severityText}\n*Record ID:* \`${symptomLogId}\`\n*Time:* ${new Date().toLocaleString()}`;
       const message = {
         text: this.prefix("📋 New symptom logged!"),
