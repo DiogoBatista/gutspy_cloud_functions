@@ -6,6 +6,10 @@ service firebase.storage {
     match /{userId}/{type}/{fileName} {
       allow read, write: if request.auth != null && request.auth.uid == userId;
     }
+    // 2.0 meal_logs: userID/meal_logs/mealLogId/filename
+    match /{userId}/meal_logs/{mealLogId}/{fileName} {
+      allow read, write: if request.auth != null && request.auth.uid == userId;
+    }
 
     // Optional: Allow public read access to certain folders if needed
     match /public/{allPaths=**} {

@@ -1,20 +1,20 @@
 /* eslint-disable max-len */
+import axios from "axios";
 import * as admin from "firebase-admin";
 import { getAuth } from "firebase-admin/auth";
+import type { DocumentReference } from "firebase-admin/firestore";
 import { getFirestore, Timestamp } from "firebase-admin/firestore";
 import { onDocumentCreated, onDocumentUpdated } from "firebase-functions/v2/firestore";
+import { HttpsError, onCall } from "firebase-functions/v2/https";
+import { beforeUserCreated } from "firebase-functions/v2/identity";
 import { onSchedule, ScheduledEvent } from "firebase-functions/v2/scheduler";
 import { onObjectFinalized } from "firebase-functions/v2/storage";
-import { beforeUserCreated } from "firebase-functions/v2/identity";
-import { onCall, HttpsError } from "firebase-functions/v2/https";
 import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
-import axios from "axios";
 import { AIService } from "./services/ai";
 import { SlackService } from "./services/slack";
 import { generateUserWeeklySummary } from "./user";
-import type { DocumentReference } from "firebase-admin/firestore";
 
 admin.initializeApp({
   projectId: "nutrisnap-96caf",
@@ -92,6 +92,63 @@ async function runDigestionImageAnalysis(
   }
 }
 
+/**
+ * Run meal image AI for a meal_log (2.0). Updates doc with ai_name and ai_ingredients only; no calories.
+ * @param {DocumentReference} mealLogRef Firestore document reference for the meal_log
+ * @param {string} userID User ID
+ * @param {string} mealLogId Meal log ID
+ * @param {string} filename Filename
+ */
+async function runMealLogImageAnalysis(
+  mealLogRef: DocumentReference,
+  userID: string,
+  mealLogId: string,
+  filename: string
+): Promise<void> {
+  const filePath = `${userID}/meal_logs/${mealLogId}/${filename}`;
+  const bucket = admin.storage().bucket(BUCKET_NAME);
+  const file = bucket.file(filePath);
+  const [fileExists] = await file.exists();
+  if (!fileExists) {
+    await mealLogRef.update({
+      status: "failed",
+      error_details: { message: "File does not exist" },
+    });
+    return;
+  }
+  await mealLogRef.update({ status: "processing" });
+  const tempFilePath = path.join(os.tmpdir(), filename);
+  try {
+    await file.download({ destination: tempFilePath });
+    const fileBuffer = fs.readFileSync(tempFilePath);
+    const base64Encoded = fileBuffer.toString("base64");
+    const aiService = AIService.getInstance();
+    const resultJson = await aiService.analyzeMealImage(base64Encoded);
+    const aiName = resultJson?.image_recognition?.name ?? "";
+    const aiIngredients = resultJson?.ingredient_extraction ?? [];
+    await mealLogRef.update({
+      status: "processed",
+      ai_name: aiName,
+      ai_ingredients: aiIngredients,
+      processed_at: Timestamp.fromDate(new Date()),
+    });
+  } catch (error) {
+    console.error("Failed to process meal_log image:", error);
+    await mealLogRef.update({
+      status: "error",
+      error_details: {
+        message: error instanceof Error ? error.message : String(error),
+      },
+    });
+  } finally {
+    try {
+      if (fs.existsSync(tempFilePath)) fs.unlinkSync(tempFilePath);
+    } catch {
+      // ignore
+    }
+  }
+}
+
 // Start writing functions
 // https://firebase.google.com/docs/functions/typescript
 
@@ -109,7 +166,7 @@ export const fileCreated = onObjectFinalized(
       return console.log("Unexpected file path structure:", filePath);
     }
 
-    // Structure is "userID/type/filename"
+    // Structure is "userID/type/filename" or "userID/meal_logs/mealLogId/filename"
     const userID = pathSegments[0];
     const type = pathSegments[1];
     const filename = pathSegments[2];
@@ -118,9 +175,27 @@ export const fileCreated = onObjectFinalized(
     console.log("type", type);
     console.log("filename", filename);
 
-    // Validate type
-    if (!["meals", "digestions", "profile"].includes(type)) {
-      return console.log("Invalid type:", type);
+    // 2.0 meal_logs: path userID/meal_logs/mealLogId/filename — update existing meal_log doc
+    if (type === "meal_logs" && pathSegments.length >= 4) {
+      const mealLogId = pathSegments[2];
+      const mealLogRef = db.collection("meal_logs").doc(mealLogId);
+      const mealLogSnap = await mealLogRef.get();
+      const mealLogData = mealLogSnap.data();
+      if (!mealLogSnap.exists || !mealLogData || mealLogData.userID !== userID) {
+        return console.log("meal_logs: doc not found or user mismatch", mealLogId);
+      }
+      await mealLogRef.update({
+        filename: pathSegments[3],
+        status: "to_be_processed",
+      });
+      console.log("meal_logs: attached photo to", mealLogId);
+      await runMealLogImageAnalysis(mealLogRef, userID, mealLogId, pathSegments[3]);
+      return;
+    }
+
+    // Validate type (3-segment paths only below)
+    if (pathSegments.length !== 3 || !["meals", "digestions", "profile"].includes(type)) {
+      return console.log("Invalid type or path length:", type, pathSegments.length);
     }
 
     // Determine collection based on type
