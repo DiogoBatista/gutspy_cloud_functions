@@ -12,6 +12,7 @@ import { onObjectFinalized } from "firebase-functions/v2/storage";
 import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
+import { processReminders, processReengagementNudges } from "./notifications";
 import { AIService } from "./services/ai";
 import { SlackService } from "./services/slack";
 import { generateUserWeeklySummary } from "./user";
@@ -735,3 +736,42 @@ export const onUserCreated = beforeUserCreated(async (event) => {
     console.error("Error sending notifications:", error);
   }
 });
+
+// ---------------------------------------------------------------------------
+// Scheduled: reminder notifications
+// ---------------------------------------------------------------------------
+
+/**
+ * Process daily reminders every 30 minutes.
+ * Checks each user's notification settings, timezone, quiet hours, and log history.
+ * Sends FCM push if the user hasn't logged today and conditions are met.
+ */
+export const sendReminders = onSchedule(
+  {
+    schedule: "*/30 * * * *", // Every 30 minutes
+    timeZone: "UTC",
+    memory: "256MiB",
+    maxInstances: 1,
+  },
+  async (event: ScheduledEvent) => {
+    console.log("sendReminders triggered", event.scheduleTime);
+    await processReminders();
+  }
+);
+
+/**
+ * Send re-engagement nudges once daily at 12:00 UTC.
+ * Targets free users who haven't logged in ~3 days.
+ */
+export const sendReengagementNudges = onSchedule(
+  {
+    schedule: "0 12 * * *", // Every day at noon UTC
+    timeZone: "UTC",
+    memory: "256MiB",
+    maxInstances: 1,
+  },
+  async (event: ScheduledEvent) => {
+    console.log("sendReengagementNudges triggered", event.scheduleTime);
+    await processReengagementNudges();
+  }
+);
