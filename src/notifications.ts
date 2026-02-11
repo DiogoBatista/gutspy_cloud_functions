@@ -234,38 +234,87 @@ async function processUserReminder(
   uid: string,
   settings: NotificationSettings
 ): Promise<void> {
-  // Validate device tokens
-  if (!settings.device_tokens || settings.device_tokens.length === 0) {
-    return;
-  }
-
   const tz = settings.timezone || "UTC";
   const { localTime, localDate, dayOfWeek } = nowInTimezone(tz);
   const currentMinutes = toMinutes(localTime);
 
+  // Log evaluated context for debugging (no token values)
+  console.log("processReminders: evaluating user", {
+    uid,
+    tz,
+    localTime,
+    localDate,
+    dayOfWeek,
+    reminder_times: settings.reminder_times,
+    quiet_hours: [settings.quiet_hours_start, settings.quiet_hours_end],
+    frequency: settings.frequency,
+    daily_count: settings.daily_count,
+    daily_count_date: settings.daily_count_date,
+    tier: settings.tier,
+    token_count: settings.device_tokens?.length ?? 0,
+  });
+
+  // Validate device tokens
+  if (!settings.device_tokens || settings.device_tokens.length === 0) {
+    console.log("processReminders: skip", { uid, reason: "no_device_tokens" });
+    return;
+  }
+
   // a. Quiet hours check
   if (isInQuietHours(currentMinutes, settings.quiet_hours_start, settings.quiet_hours_end)) {
+    console.log("processReminders: skip", {
+      uid,
+      reason: "quiet_hours",
+      localTime,
+      quiet_hours: [settings.quiet_hours_start, settings.quiet_hours_end],
+    });
     return;
   }
 
   // b. Day check (weekdays, custom)
   if (settings.frequency === "weekdays" && (dayOfWeek === 0 || dayOfWeek === 6)) {
+    console.log("processReminders: skip", {
+      uid,
+      reason: "day_of_week",
+      dayOfWeek,
+      frequency: settings.frequency,
+    });
     return;
   }
   if (settings.frequency === "custom" && settings.custom_days) {
     if (!settings.custom_days.includes(dayOfWeek)) {
+      console.log("processReminders: skip", {
+        uid,
+        reason: "custom_day_not_match",
+        dayOfWeek,
+        custom_days: settings.custom_days,
+      });
       return;
     }
   }
 
   // c. Time window check
   if (!isTimeWindowMatch(currentMinutes, settings.reminder_times)) {
+    console.log("processReminders: skip", {
+      uid,
+      reason: "time_window",
+      localTime,
+      reminder_times: settings.reminder_times,
+      currentMinutes,
+    });
     return;
   }
 
   // d. Daily cap check
   const maxDaily = MAX_DAILY[settings.tier] ?? 1;
   if (settings.daily_count_date === localDate && settings.daily_count >= maxDaily) {
+    console.log("processReminders: skip", {
+      uid,
+      reason: "daily_cap",
+      daily_count: settings.daily_count,
+      maxDaily,
+      localDate,
+    });
     return;
   }
 
@@ -279,7 +328,11 @@ async function processUserReminder(
     .get();
 
   if (!todayLogsSnap.empty) {
-    // User already logged today — skip
+    console.log("processReminders: skip", {
+      uid,
+      reason: "already_logged_today",
+      localDate,
+    });
     return;
   }
 
@@ -295,6 +348,11 @@ async function processUserReminder(
     const lastLogTime = (lastLogSnap.docs[0].data().created_at as Timestamp).toDate();
     const daysSinceLastLog = (Date.now() - lastLogTime.getTime()) / (1000 * 60 * 60 * 24);
     if (daysSinceLastLog > INACTIVITY_DAYS) {
+      console.log("processReminders: skip", {
+        uid,
+        reason: "inactive_30_days",
+        daysSinceLastLog: Math.round(daysSinceLastLog * 10) / 10,
+      });
       return;
     }
   }
