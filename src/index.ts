@@ -17,15 +17,11 @@ import { AIService } from "./services/ai";
 import { SlackService } from "./services/slack";
 import { generateUserWeeklySummary } from "./user";
 
-admin.initializeApp({
-  projectId: "nutrisnap-96caf",
-});
+admin.initializeApp();
 
 // Get service instances
 const db = getFirestore();
 const auth = getAuth();
-
-const BUCKET_NAME = "nutrisnap-96caf.appspot.com";
 
 /**
  * Shared: run AI image analysis on a digestion record and update the doc.
@@ -37,7 +33,7 @@ async function runDigestionImageAnalysis(
   data: { userID: string; filename: string; analysis?: Record<string, unknown> }
 ): Promise<void> {
   const filePath = `${data.userID}/digestions/${data.filename}`;
-  const bucket = admin.storage().bucket(BUCKET_NAME);
+  const bucket = admin.storage().bucket();
   const file = bucket.file(filePath);
   const [fileExists] = await file.exists();
   if (!fileExists) {
@@ -107,7 +103,7 @@ async function runMealLogImageAnalysis(
   filename: string
 ): Promise<void> {
   const filePath = `${userID}/meal_logs/${mealLogId}/${filename}`;
-  const bucket = admin.storage().bucket(BUCKET_NAME);
+  const bucket = admin.storage().bucket();
   const file = bucket.file(filePath);
   const [fileExists] = await file.exists();
   if (!fileExists) {
@@ -154,146 +150,143 @@ async function runMealLogImageAnalysis(
 // https://firebase.google.com/docs/functions/typescript
 
 // Cloud Function to handle object finalization in Firebase Storage
-export const fileCreated = onObjectFinalized(
-  { bucket: "nutrisnap-96caf.appspot.com" },
-  async (event) => {
-    // Extract the file path and name
-    const filePath = event.data.name; // File path in the bucket
-    if (!filePath) return console.log("No file path found");
+export const fileCreated = onObjectFinalized(async (event) => {
+  // Extract the file path and name
+  const filePath = event.data.name; // File path in the bucket
+  if (!filePath) return console.log("No file path found");
 
-    // Split the filePath to get userID, type and filename (normalize: no leading/trailing slashes)
-    const pathSegments = filePath.split("/").filter(Boolean);
-    if (pathSegments.length < 3) {
-      return console.log("Unexpected file path structure:", filePath);
-    }
-
-    // Structure is "userID/type/filename" or "userID/meal_logs/mealLogId/filename"
-    const userID = pathSegments[0];
-    const type = pathSegments[1];
-    const filename = pathSegments[2];
-
-    console.log("userID", userID);
-    console.log("type", type);
-    console.log("filename", filename);
-
-    // 2.0 meal_logs: path userID/meal_logs/mealLogId/filename — update existing meal_log doc
-    if (type === "meal_logs" && pathSegments.length >= 4) {
-      const mealLogId = pathSegments[2];
-      const mealLogRef = db.collection("meal_logs").doc(mealLogId);
-      const mealLogSnap = await mealLogRef.get();
-      const mealLogData = mealLogSnap.data();
-      if (!mealLogSnap.exists || !mealLogData || mealLogData.userID !== userID) {
-        return console.log("meal_logs: doc not found or user mismatch", mealLogId);
-      }
-      await mealLogRef.update({
-        filename: pathSegments[3],
-        status: "to_be_processed",
-      });
-      console.log("meal_logs: attached photo to", mealLogId);
-      await runMealLogImageAnalysis(mealLogRef, userID, mealLogId, pathSegments[3]);
-      return;
-    }
-
-    // Validate type (3-segment paths only below)
-    if (pathSegments.length !== 3 || !["meals", "digestions", "profile"].includes(type)) {
-      return console.log("Invalid type or path length:", type, pathSegments.length);
-    }
-
-    // Determine collection based on type
-    let collection = "";
-
-    if (type === "meals") {
-      collection = "meal_records";
-    } else if (type === "digestions") {
-      collection = "digestion_records";
-    } else if (type === "profile") {
-      collection = "user_profiles";
-    }
-
-    if (collection === "") {
-      return console.log("Invalid type:", type);
-    }
-
-    try {
-      if (type === "digestions") {
-        // BmItem uploads as recordId_timestamp.jpg for existing log; do not create a new doc.
-        if (filename.includes("_")) {
-          const candidateRecordId = filename.split("_")[0];
-          const existingDoc = await db.collection(collection).doc(candidateRecordId).get();
-          const existingData = existingDoc.data();
-          const docUserIdField = existingData && (existingData as { userId?: string }).userId;
-          const docUserID = existingData && (existingData.userID ?? docUserIdField);
-          const belongsToUser = docUserID === userID;
-          console.log("Digestion existing-check:", {
-            candidateRecordId,
-            exists: existingDoc.exists,
-            docUserID: docUserID ?? "(none)",
-            pathUserID: userID,
-            belongsToUser,
-          });
-          if (existingDoc.exists && existingData && belongsToUser) {
-            await existingDoc.ref.update({
-              filename,
-              status: "to_be_processed",
-              analysis: { source: "ai" },
-            });
-            console.log("Digestion: attached photo to existing record", candidateRecordId);
-            // Run AI here so the file is guaranteed to exist (same trigger); app's on-demand call will get cached.
-            const mergedData = {
-              ...existingData,
-              userID,
-              filename,
-              analysis: { ...(existingData.analysis || {}), source: "ai" as const },
-            };
-
-            console.log("mergedData", mergedData);
-            await runDigestionImageAnalysis(existingDoc.ref, mergedData);
-            return;
-          }
-        }
-
-        const digestionRecordData = {
-          userID: userID,
-          filename: filename,
-          status: "to_be_processed",
-          analysis: {
-            source: "ai",
-          },
-          created_at: Timestamp.fromDate(new Date()),
-          type: type,
-        };
-
-        console.log("Digestion record data:", digestionRecordData);
-
-        await db.collection(collection).add(digestionRecordData);
-        console.log("Digestion record added successfully");
-      } else if (type === "meals") {
-        console.log("TIMESTAMP: ", Timestamp, Timestamp.fromDate(new Date()));
-
-        // Add meal record
-        const mealRecordData = {
-          userID: userID,
-          filename: filename,
-          status: "to_be_processed",
-          nutritional_report: null,
-          created_at: Timestamp.fromDate(new Date()),
-          type: type,
-        };
-
-        console.log("Meal record data:", mealRecordData);
-
-        await db.collection(collection).add(mealRecordData);
-        console.log("Meal record added successfully");
-      } else if (type === "profile") {
-        // TODO: Add profile record
-      }
-
-      // console.log(`${type} successfully written with ID:`, docRef.id);
-    } catch (error) {
-      console.error("Error writing document:", error);
-    }
+  // Split the filePath to get userID, type and filename (normalize: no leading/trailing slashes)
+  const pathSegments = filePath.split("/").filter(Boolean);
+  if (pathSegments.length < 3) {
+    return console.log("Unexpected file path structure:", filePath);
   }
-);
+
+  // Structure is "userID/type/filename" or "userID/meal_logs/mealLogId/filename"
+  const userID = pathSegments[0];
+  const type = pathSegments[1];
+  const filename = pathSegments[2];
+
+  console.log("userID", userID);
+  console.log("type", type);
+  console.log("filename", filename);
+
+  // 2.0 meal_logs: path userID/meal_logs/mealLogId/filename — update existing meal_log doc
+  if (type === "meal_logs" && pathSegments.length >= 4) {
+    const mealLogId = pathSegments[2];
+    const mealLogRef = db.collection("meal_logs").doc(mealLogId);
+    const mealLogSnap = await mealLogRef.get();
+    const mealLogData = mealLogSnap.data();
+    if (!mealLogSnap.exists || !mealLogData || mealLogData.userID !== userID) {
+      return console.log("meal_logs: doc not found or user mismatch", mealLogId);
+    }
+    await mealLogRef.update({
+      filename: pathSegments[3],
+      status: "to_be_processed",
+    });
+    console.log("meal_logs: attached photo to", mealLogId);
+    await runMealLogImageAnalysis(mealLogRef, userID, mealLogId, pathSegments[3]);
+    return;
+  }
+
+  // Validate type (3-segment paths only below)
+  if (pathSegments.length !== 3 || !["meals", "digestions", "profile"].includes(type)) {
+    return console.log("Invalid type or path length:", type, pathSegments.length);
+  }
+
+  // Determine collection based on type
+  let collection = "";
+
+  if (type === "meals") {
+    collection = "meal_records";
+  } else if (type === "digestions") {
+    collection = "digestion_records";
+  } else if (type === "profile") {
+    collection = "user_profiles";
+  }
+
+  if (collection === "") {
+    return console.log("Invalid type:", type);
+  }
+
+  try {
+    if (type === "digestions") {
+      // BmItem uploads as recordId_timestamp.jpg for existing log; do not create a new doc.
+      if (filename.includes("_")) {
+        const candidateRecordId = filename.split("_")[0];
+        const existingDoc = await db.collection(collection).doc(candidateRecordId).get();
+        const existingData = existingDoc.data();
+        const docUserIdField = existingData && (existingData as { userId?: string }).userId;
+        const docUserID = existingData && (existingData.userID ?? docUserIdField);
+        const belongsToUser = docUserID === userID;
+        console.log("Digestion existing-check:", {
+          candidateRecordId,
+          exists: existingDoc.exists,
+          docUserID: docUserID ?? "(none)",
+          pathUserID: userID,
+          belongsToUser,
+        });
+        if (existingDoc.exists && existingData && belongsToUser) {
+          await existingDoc.ref.update({
+            filename,
+            status: "to_be_processed",
+            analysis: { source: "ai" },
+          });
+          console.log("Digestion: attached photo to existing record", candidateRecordId);
+          // Run AI here so the file is guaranteed to exist (same trigger); app's on-demand call will get cached.
+          const mergedData = {
+            ...existingData,
+            userID,
+            filename,
+            analysis: { ...(existingData.analysis || {}), source: "ai" as const },
+          };
+
+          console.log("mergedData", mergedData);
+          await runDigestionImageAnalysis(existingDoc.ref, mergedData);
+          return;
+        }
+      }
+
+      const digestionRecordData = {
+        userID: userID,
+        filename: filename,
+        status: "to_be_processed",
+        analysis: {
+          source: "ai",
+        },
+        created_at: Timestamp.fromDate(new Date()),
+        type: type,
+      };
+
+      console.log("Digestion record data:", digestionRecordData);
+
+      await db.collection(collection).add(digestionRecordData);
+      console.log("Digestion record added successfully");
+    } else if (type === "meals") {
+      console.log("TIMESTAMP: ", Timestamp, Timestamp.fromDate(new Date()));
+
+      // Add meal record
+      const mealRecordData = {
+        userID: userID,
+        filename: filename,
+        status: "to_be_processed",
+        nutritional_report: null,
+        created_at: Timestamp.fromDate(new Date()),
+        type: type,
+      };
+
+      console.log("Meal record data:", mealRecordData);
+
+      await db.collection(collection).add(mealRecordData);
+      console.log("Meal record added successfully");
+    } else if (type === "profile") {
+      // TODO: Add profile record
+    }
+
+    // console.log(`${type} successfully written with ID:`, docRef.id);
+  } catch (error) {
+    console.error("Error writing document:", error);
+  }
+});
 
 export const onImageProcessingRecordCreated = onDocumentCreated(
   "/meal_records/{recordId}",
@@ -323,7 +316,7 @@ export const onImageProcessingRecordCreated = onDocumentCreated(
 
     try {
       const storage = admin.storage();
-      const bucket = storage.bucket("nutrisnap-96caf.appspot.com");
+      const bucket = storage.bucket();
       const type = newData.type;
       const filePath = `${newData.userID}/${type}/${newData.filename}`;
 
@@ -534,7 +527,7 @@ export const requestDigestionImageAnalysis = onCall({ enforceAppCheck: false }, 
   if (data.ai_concerns?.length && data.ai_recommendations?.length) {
     return { cached: true };
   }
-  const bucket = admin.storage().bucket(BUCKET_NAME);
+  const bucket = admin.storage().bucket();
   const file = bucket.file(filePath);
   const [fileExists] = await file.exists();
   if (!fileExists) {
@@ -638,7 +631,7 @@ export const onMealRecordRetry = onDocumentUpdated("/meal_records/{recordId}", a
 
   try {
     const storage = admin.storage();
-    const bucket = storage.bucket("nutrisnap-96caf.appspot.com");
+    const bucket = storage.bucket();
     const type = afterData.type;
     const filePath = `${afterData.userID}/${type}/${afterData.filename}`;
 

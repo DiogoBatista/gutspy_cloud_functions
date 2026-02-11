@@ -9,10 +9,18 @@
     "shell": "yarn build && firebase functions:shell",
     "start": "yarn shell",
     "deploy": "firebase deploy --only functions",
+    "deploy:staging": "firebase use staging && firebase deploy --only functions",
+    "deploy:production": "firebase use production && firebase deploy --only functions",
+    "deploy:all": "firebase use staging && firebase deploy --only functions && firebase use production && firebase deploy --only functions",
+    "deploy:rules:staging": "firebase use staging && firebase deploy --only firestore:rules,storage",
+    "deploy:rules:production": "firebase use production && firebase deploy --only firestore:rules,storage",
+    "deploy:indexes:staging": "firebase use staging && firebase deploy --only firestore:indexes",
+    "deploy:indexes:production": "firebase use production && firebase deploy --only firestore:indexes",
+    "deploy:indexes:all": "firebase use staging && firebase deploy --only firestore:indexes && firebase use production && firebase deploy --only firestore:indexes",
     "logs": "firebase functions:log"
   },
   "engines": {
-    "node": "18"
+    "node": "22"
   },
   "main": "lib/index.js",
   "dependencies": {

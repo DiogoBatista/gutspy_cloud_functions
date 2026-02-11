@@ -335,24 +335,25 @@ async function processUserReminder(
     `processReminders: sent to ${uid}, success=${response.successCount}, failure=${response.failureCount}`
   );
 
-  // h. Update tracking fields
-  const newDailyCount = settings.daily_count_date === localDate ? settings.daily_count + 1 : 1;
-
-  await db.collection(NOTIFICATION_SETTINGS_COLLECTION).doc(uid).update({
-    last_notified_at: Timestamp.now(),
-    daily_count: newDailyCount,
-    daily_count_date: localDate,
-    updated_at: Timestamp.now(),
+  // Log FCM errors so we can diagnose delivery failures
+  response.responses.forEach((resp, idx) => {
+    if (resp.error) {
+      console.error(`processReminders: FCM error for ${uid} token[${idx}]:`, {
+        code: resp.error.code,
+        message: resp.error.message,
+      });
+    }
   });
 
-  // i. Token cleanup — remove invalid tokens
+  // i. Token cleanup — remove invalid tokens (e.g. APNs token stored as FCM, or stale)
   const invalidTokens: string[] = [];
   response.responses.forEach((resp, idx) => {
     if (resp.error) {
       const code = resp.error.code;
       if (
         code === "messaging/registration-token-not-registered" ||
-        code === "messaging/invalid-registration-token"
+        code === "messaging/invalid-registration-token" ||
+        code === "messaging/invalid-argument"
       ) {
         invalidTokens.push(tokens[idx]);
       }
@@ -367,6 +368,18 @@ async function processUserReminder(
     });
     console.log(`processReminders: cleaned ${invalidTokens.length} stale tokens for ${uid}`);
   }
+
+  // h. Update tracking only if at least one send succeeded (so we don't mark as sent when user got nothing)
+  if (response.successCount === 0) {
+    return;
+  }
+  const newDailyCount = settings.daily_count_date === localDate ? settings.daily_count + 1 : 1;
+  await db.collection(NOTIFICATION_SETTINGS_COLLECTION).doc(uid).update({
+    last_notified_at: Timestamp.now(),
+    daily_count: newDailyCount,
+    daily_count_date: localDate,
+    updated_at: Timestamp.now(),
+  });
 }
 
 // ---------------------------------------------------------------------------

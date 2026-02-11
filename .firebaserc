@@ -1,5 +1,7 @@
 {
   "projects": {
-    "default": "nutrisnap-96caf"
+    "default": "nutrisnap-96caf",
+    "staging": "gutspy-stg",
+    "production": "nutrisnap-96caf"
   }
 }
