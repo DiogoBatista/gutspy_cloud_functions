@@ -403,17 +403,21 @@ async function processUserReminder(
     }
   });
 
-  // i. Token cleanup — remove invalid tokens (e.g. APNs token stored as FCM, or stale)
+  // i. Token cleanup — remove only clearly terminal tokens; invalid-argument may be transient
   const invalidTokens: string[] = [];
   response.responses.forEach((resp, idx) => {
     if (resp.error) {
       const code = resp.error.code;
       if (
         code === "messaging/registration-token-not-registered" ||
-        code === "messaging/invalid-registration-token" ||
-        code === "messaging/invalid-argument"
+        code === "messaging/invalid-registration-token"
       ) {
         invalidTokens.push(tokens[idx]);
+      } else if (code === "messaging/invalid-argument") {
+        // Log but don't remove — could be project mismatch, APNs config, or transient
+        console.warn(
+          `processReminders: invalid-argument for ${uid} token[${idx}] (kept for investigation)`
+        );
       }
     }
   });
