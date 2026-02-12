@@ -46,6 +46,7 @@ interface NotificationSettings {
 // ---------------------------------------------------------------------------
 
 const NOTIFICATION_SETTINGS_COLLECTION = "notification_settings";
+const NOTIFICATION_HISTORY_COLLECTION = "notification_history";
 const DIGESTIONS_COLLECTION = "digestion_records";
 
 const MAX_DAILY: Record<string, number> = { free: 1, premium: 3 };
@@ -442,6 +443,17 @@ async function processUserReminder(
     daily_count_date: localDate,
     updated_at: Timestamp.now(),
   });
+
+  // Write to notification history for in-app display
+  await db.collection(NOTIFICATION_HISTORY_COLLECTION).add({
+    userID: uid,
+    title: copy.title,
+    body: copy.body,
+    type: "daily_reminder",
+    reminder_type: "bm",
+    tier: settings.tier,
+    sent_at: Timestamp.now(),
+  });
 }
 
 // ---------------------------------------------------------------------------
@@ -552,6 +564,19 @@ export async function processReengagementNudges(): Promise<void> {
         last_reengagement_at: Timestamp.now(),
         updated_at: Timestamp.now(),
       });
+
+      // Write to notification history when at least one send succeeded
+      if (response.successCount > 0) {
+        await db.collection(NOTIFICATION_HISTORY_COLLECTION).add({
+          userID: uid,
+          title: copy.title,
+          body: copy.body,
+          type: "reengagement",
+          reminder_type: "bm",
+          tier: "free",
+          sent_at: Timestamp.now(),
+        });
+      }
 
       // Token cleanup
       const invalidTokens: string[] = [];
