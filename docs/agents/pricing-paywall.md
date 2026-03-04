@@ -5,7 +5,7 @@
 Max installs and activation by keeping the first win free, then monetize only on high intent actions.
 
 ### Pricing (pivot launch)
-- Monthly: €4.99
+- Monthly: €3.99
 - Annual: €29.99 (best value)
 Framing: "Save about 50% with annual".
 
@@ -14,12 +14,12 @@ Free (forever):
 - IBS logging + basic summaries usable from day one
 
 IBS Plus (subscription):
-- Patterns, advanced trends, reminders, guided 14-day mode, doctor report export
+- Patterns, advanced trends, reminders, guided 14-day mode, insights report export
 
 ### Feature matrix
 Free:
-- Onboarding to first BM log
-- Unlimited BM logging (Bristol, urgency, pain, notes)
+- Onboarding to first Bowel Movement (BM) log
+- Unlimited Bowel Movement (BM) logging (Bristol, urgency, pain, notes)
 - Unlimited symptoms
 - Optional meal notes (not calories-first)
 - Timeline view
@@ -37,13 +37,13 @@ IBS Plus:
 ### Paywall placement rules
 Never block:
 - Onboarding
-- First BM log
+- First Bowel Movement (BM) log
 - Timeline
 - Basic weekly summary
 
 Only show paywall on premium actions:
 - View patterns detail
-- Export doctor report
+- Export insights report
 - Advanced trends
 - Start 14-day mode
 - Enable reminders (if premium)

@@ -319,7 +319,7 @@ async function processUserReminder(
     return;
   }
 
-  // e. Log check — has user logged a BM today?
+  // e. Log check — has user logged a Bowel Movement (BM) today?
   const startOfDay = getStartOfDayInTz(tz);
   const todayLogsSnap = await db
     .collection(DIGESTIONS_COLLECTION)

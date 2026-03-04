@@ -9,18 +9,18 @@ Push notifications are sent server-side via Firebase Cloud Functions + FCM.
 The app handles:
 - Permission prompts
 - Token registration
-- Notification taps routing (deep link to Log BM)
+- Notification taps routing (deep link to Log Bowel Movement (BM))
 
-Server sends a push only if the user has not logged a BM today.
+Server sends a push only if the user has not logged a Bowel Movement (BM) today.
 
 ### Free vs Premium
 Free:
 - Default state: OFF until permission granted
-- Activation: pre-permission prompt after 3rd BM log
+- Activation: pre-permission prompt after 3rd Bowel Movement (BM) log
 - Reminder time: fixed 20:00 local
 - Quiet hours: fixed 22:00 to 08:00
 - Frequency: daily
-- Reminder types: BM only
+- Reminder types: Bowel Movement (BM) only
 - Max notifications per day: 1
 
 Premium (IBS Plus):
@@ -28,7 +28,7 @@ Premium (IBS Plus):
 - Reminder times: 1 to 3 custom times
 - Quiet hours: configurable start and end
 - Frequency: daily, weekdays only, or custom days
-- Reminder types: BM, symptoms, meals toggles
+- Reminder types: Bowel Movement (BM), symptoms, meals toggles
 - Max notifications per day: 3
 
 Shared:
@@ -37,7 +37,7 @@ Shared:
 
 ### Permission prompt timing
 Never during onboarding.
-After the user's 3rd BM log, show a pre-permission modal:
+After the user's 3rd Bowel Movement (BM) log, show a pre-permission modal:
 - "Want gentle reminders? We nudge you once a day if you have not logged. No spam."
 Buttons:
 - Enable reminders
@@ -59,7 +59,7 @@ Cloud Scheduler every 30 minutes:
 - Skip if day not allowed (premium custom days)
 - Skip if time not near a reminder time (+/- 15 min)
 - Skip if daily cap reached
-- Skip if BM logged today
+- Skip if Bowel Movement (BM) logged today
 - Skip if inactive 30+ days
 - Send FCM push
 - Update last_notified_at and daily_count

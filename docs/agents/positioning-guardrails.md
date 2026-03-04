@@ -28,7 +28,7 @@ Keep all product, marketing, and UX work aligned with the IBS-only pivot.
 - "Seen X times in your logs" (instead of n=)
 
 ### UX guardrails
-- Never block onboarding, first BM log, timeline, basic weekly summary.
+- Never block onboarding, first Bowel Movement (BM) log, timeline, basic weekly summary.
 - Premium gates only: patterns detail, advanced trends, export report, reminders settings, 14-day mode.
 
 ### Output formats this category should produce

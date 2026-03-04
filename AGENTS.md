@@ -16,8 +16,8 @@ Firebase Cloud Functions (TypeScript) for **GutSpy IBS**. Handles:
 - Short, neutral, supportive. Example titles: "Quick check-in", "Track your day", "10-second check-in". Example bodies: "Logged anything today? It takes 10 seconds.", "A quick log helps spot patterns over time."
 
 ### Reminders: free vs premium
-- **Free:** Default OFF until permission granted. After 3rd BM log: pre-permission prompt. Reminder time fixed 20:00 local. Quiet hours fixed 22:00–08:00. Daily only, BM only. Max 1 notification/day.
-- **Premium (IBS Plus):** OFF until user enables in Settings. 1–3 custom reminder times. Configurable quiet hours. Frequency: daily, weekdays, or custom days. Reminder types: BM, symptoms, meals. Max 3 notifications/day.
+- **Free:** Default OFF until permission granted. After 3rd Bowel Movement (BM) log: pre-permission prompt. Reminder time fixed 20:00 local. Quiet hours fixed 22:00–08:00. Daily only, Bowel Movement (BM) only. Max 1 notification/day.
+- **Premium (IBS Plus):** OFF until user enables in Settings. 1–3 custom reminder times. Configurable quiet hours. Frequency: daily, weekdays, or custom days. Reminder types: Bowel Movement (BM), symptoms, meals. Max 3 notifications/day.
 - **Shared:** Re-engagement nudge once after 3 days inactive. Auto-disable after 30 days inactive.
 
 ### Quiet hours logic
@@ -27,7 +27,7 @@ Firebase Cloud Functions (TypeScript) for **GutSpy IBS**. Handles:
 - enabled, tier ("free" | "premium"), timezone (IANA), quiet_hours_start/end ("HH:mm"), reminder_times[], frequency ("daily" | "weekdays" | "custom"), custom_days[] (0=Sun..6=Sat), reminder_types: { bm, symptoms, meals }, device_tokens[], last_notified_at, daily_count, daily_count_date ("YYYY-MM-DD"), last_reengagement_at.
 
 ### Scheduler design (processReminders)
-- Every 30 min: query enabled users, convert UTC to user timezone, skip if quiet hours, skip if day not allowed (premium custom days), skip if time not near a reminder time (±15 min), skip if daily cap reached, skip if BM logged today, skip if inactive 30+ days. Send FCM, update last_notified_at and daily_count. Clean stale tokens on FCM errors.
+- Every 30 min: query enabled users, convert UTC to user timezone, skip if quiet hours, skip if day not allowed (premium custom days), skip if time not near a reminder time (±15 min), skip if daily cap reached, skip if Bowel Movement (BM) logged today, skip if inactive 30+ days. Send FCM, update last_notified_at and daily_count. Clean stale tokens on FCM errors.
 
 ### Analytics events (for client)
 - notif_perm_prompted, notif_perm_granted, notif_perm_denied, reminder_enabled, reminder_disabled, reminder_settings_changed, reminder_opened, bm_log_created (source=notification).
