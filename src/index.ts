@@ -477,69 +477,167 @@ export const onDigestionRecordCreated = onDocumentCreated(
 
 /** On-demand AI explain (premium). Called by app when user taps "Explain this log". */
 export const requestDigestionAiExplain = onCall({ enforceAppCheck: false }, async (request) => {
+  console.log("requestDigestionAiExplain:start", {
+    uid: request.auth?.uid ?? null,
+    hasAuth: !!request.auth,
+    recordId: (request.data as { recordId?: string } | undefined)?.recordId ?? null,
+  });
+
   if (!request.auth) {
+    console.warn("requestDigestionAiExplain:unauthenticated");
     throw new HttpsError("unauthenticated", "Must be signed in");
   }
   const { recordId } = request.data as { recordId: string };
   if (!recordId || typeof recordId !== "string") {
+    console.warn("requestDigestionAiExplain:invalid-argument", { uid: request.auth.uid, recordId });
     throw new HttpsError("invalid-argument", "recordId is required");
   }
+
+  console.log("requestDigestionAiExplain:fetch-record", { uid: request.auth.uid, recordId });
   const docSnap = await db.collection("digestion_records").doc(recordId).get();
   if (!docSnap.exists) {
+    console.warn("requestDigestionAiExplain:record-not-found", { uid: request.auth.uid, recordId });
     throw new HttpsError("not-found", "Record not found");
   }
+
   const data = docSnap.data();
   if (!data || data.userID !== request.auth.uid) {
+    console.warn("requestDigestionAiExplain:permission-denied", {
+      uid: request.auth.uid,
+      recordId,
+      recordUserId: data?.userID ?? null,
+    });
     throw new HttpsError("permission-denied", "Not your record");
   }
   if (data.ai_concerns?.length && data.ai_recommendations?.length) {
+    console.log("requestDigestionAiExplain:cache-hit", {
+      uid: request.auth.uid,
+      recordId,
+      concernsCount: data.ai_concerns.length,
+      recommendationsCount: data.ai_recommendations.length,
+    });
     return { cached: true };
   }
+
+  console.log("requestDigestionAiExplain:ai-analysis-start", { uid: request.auth.uid, recordId });
   const aiService = AIService.getInstance();
   const resultJson = await aiService.analyzeDigestionData(data.analysis);
+
+  console.log("requestDigestionAiExplain:ai-analysis-finished", {
+    uid: request.auth.uid,
+    recordId,
+    concernsCount: resultJson.concerns?.length ?? 0,
+    recommendationsCount: resultJson.recommendations?.length ?? 0,
+  });
+
   await docSnap.ref.update({
     status: "processed",
     processed_at: Timestamp.fromDate(new Date()),
     ai_concerns: resultJson.concerns,
     ai_recommendations: resultJson.recommendations,
   });
+
+  console.log("requestDigestionAiExplain:success", { uid: request.auth.uid, recordId });
   return { cached: false };
 });
 
 /** On-demand image analysis (premium). Called by app when user taps "Scan photo". */
 export const requestDigestionImageAnalysis = onCall({ enforceAppCheck: false }, async (request) => {
-  console.log("requestDigestionImageAnalysis", request);
+  console.log("requestDigestionImageAnalysis:start", {
+    uid: request.auth?.uid ?? null,
+    hasAuth: !!request.auth,
+    recordId: (request.data as { recordId?: string } | undefined)?.recordId ?? null,
+    filePath: (request.data as { filePath?: string } | undefined)?.filePath ?? null,
+  });
+
   if (!request.auth) {
+    console.warn("requestDigestionImageAnalysis:unauthenticated");
     throw new HttpsError("unauthenticated", "Must be signed in");
   }
   const { recordId, filePath } = request.data as { recordId: string; filePath: string };
   if (!recordId || !filePath) {
+    console.warn("requestDigestionImageAnalysis:invalid-argument", {
+      uid: request.auth.uid,
+      recordId,
+      filePath,
+    });
     throw new HttpsError("invalid-argument", "recordId and filePath are required");
   }
+
+  console.log("requestDigestionImageAnalysis:fetch-record", {
+    uid: request.auth.uid,
+    recordId,
+  });
   const docSnap = await db.collection("digestion_records").doc(recordId).get();
   if (!docSnap.exists) {
+    console.warn("requestDigestionImageAnalysis:record-not-found", {
+      uid: request.auth.uid,
+      recordId,
+    });
     throw new HttpsError("not-found", "Record not found");
   }
+
   const data = docSnap.data();
   if (!data || data.userID !== request.auth.uid) {
+    console.warn("requestDigestionImageAnalysis:permission-denied", {
+      uid: request.auth.uid,
+      recordId,
+      recordUserId: data?.userID ?? null,
+    });
     throw new HttpsError("permission-denied", "Not your record");
   }
   if (data.ai_concerns?.length && data.ai_recommendations?.length) {
+    console.log("requestDigestionImageAnalysis:cache-hit", {
+      uid: request.auth.uid,
+      recordId,
+      concernsCount: data.ai_concerns.length,
+      recommendationsCount: data.ai_recommendations.length,
+    });
     return { cached: true };
   }
+
+  console.log("requestDigestionImageAnalysis:check-storage-file", {
+    uid: request.auth.uid,
+    recordId,
+    filePath,
+  });
   const bucket = admin.storage().bucket();
   const file = bucket.file(filePath);
   const [fileExists] = await file.exists();
   if (!fileExists) {
     // Storage trigger may not have written the file yet; AI will run in fileCreated. Tell app to wait.
+    console.log("requestDigestionImageAnalysis:file-missing-processing", {
+      uid: request.auth.uid,
+      recordId,
+      filePath,
+    });
     return { processing: true };
   }
+
+  console.log("requestDigestionImageAnalysis:file-found-download-start", {
+    uid: request.auth.uid,
+    recordId,
+    filePath,
+  });
   const [buffer] = await file.download();
   const base64Encoded = buffer.toString("base64");
+
+  console.log("requestDigestionImageAnalysis:ai-analysis-start", {
+    uid: request.auth.uid,
+    recordId,
+    filePath,
+  });
   const aiService = AIService.getInstance();
   const resultJson = await aiService.analyzeDigestionImage(base64Encoded);
 
-  console.log("resultJson", resultJson);
+  console.log("requestDigestionImageAnalysis:ai-analysis-finished", {
+    uid: request.auth.uid,
+    recordId,
+    filePath,
+    concernsCount: resultJson.concerns?.length ?? 0,
+    recommendationsCount: resultJson.recommendations?.length ?? 0,
+    source: "ai",
+  });
 
   await docSnap.ref.update({
     status: "processed",
@@ -557,6 +655,12 @@ export const requestDigestionImageAnalysis = onCall({ enforceAppCheck: false }, 
     },
     ai_concerns: resultJson.concerns,
     ai_recommendations: resultJson.recommendations,
+  });
+
+  console.log("requestDigestionImageAnalysis:success", {
+    uid: request.auth.uid,
+    recordId,
+    filePath,
   });
   return { cached: false };
 });
