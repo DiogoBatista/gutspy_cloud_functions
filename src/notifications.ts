@@ -35,6 +35,10 @@ interface NotificationSettings {
   last_notified_at: Timestamp | null;
   daily_count: number;
   daily_count_date: string;
+  /** Normalized "HH:mm" slots already sent today (local day); see reminder_fires_date. */
+  reminder_times_fired?: string[];
+  /** Local date (YYYY-MM-DD) for which reminder_times_fired applies. */
+  reminder_fires_date?: string;
   last_reengagement_at?: Timestamp | null;
   device_tokens: DeviceToken[];
   created_at: Timestamp;
@@ -50,6 +54,8 @@ const NOTIFICATION_HISTORY_COLLECTION = "notification_history";
 const DIGESTIONS_COLLECTION = "digestion_records";
 
 const MAX_DAILY: Record<string, number> = { free: 1, premium: 3 };
+/** Match a reminder if local now is within this many minutes of the slot (either side). */
+const REMINDER_MATCH_WINDOW_MINUTES = 15;
 const INACTIVITY_DAYS = 30;
 const REENGAGEMENT_DAYS = 3;
 const REENGAGEMENT_COOLDOWN_DAYS = 7;
@@ -144,21 +150,80 @@ function nowInTimezone(tz: string): { localTime: string; localDate: string; dayO
 }
 
 /**
- * Check if the current 30-min window covers any of the user's reminder times.
- * Window: [now - 15min, now + 15min].
- * @param {number} currentMinutes Current local time in minutes since midnight
- * @param {string[]} reminderTimes Array of "HH:mm" reminder time strings
- * @return {boolean} True if any reminder time falls within the current window
+ * Normalize "H:mm" / "HH:mm" to "HH:mm" for stable Firestore keys.
+ * @param {string} rt Raw time string
+ * @return {string | null} Normalized time or null if invalid
  */
-function isTimeWindowMatch(currentMinutes: number, reminderTimes: string[]): boolean {
+function normalizeReminderTime(rt: string): string | null {
+  const parts = rt.trim().split(":");
+  if (parts.length < 2) return null;
+  const h = Number(parts[0]);
+  const m = Number(parts[1]);
+  if (!Number.isFinite(h) || !Number.isFinite(m)) return null;
+  if (h < 0 || h > 23 || m < 0 || m > 59) return null;
+  return `${String(h).padStart(2, "0")}:${String(m).padStart(2, "0")}`;
+}
+
+/**
+ * Minutes difference between current time and a slot, handling midnight wrap.
+ * @param {number} currentMinutes Current local minutes since midnight
+ * @param {number} slotMinutes Slot minutes since midnight
+ * @return {number} Wrapped difference in minutes
+ */
+function wrappedMinutesDiff(currentMinutes: number, slotMinutes: number): number {
+  const diff = Math.abs(currentMinutes - slotMinutes);
+  return Math.min(diff, 1440 - diff);
+}
+
+/**
+ * Whether local now is within the match window of this slot.
+ * @param {number} currentMinutes Current local minutes since midnight
+ * @param {string} normalizedSlot "HH:mm"
+ * @return {boolean} True if within window
+ */
+function isSlotInMatchWindow(currentMinutes: number, normalizedSlot: string): boolean {
+  return (
+    wrappedMinutesDiff(currentMinutes, toMinutes(normalizedSlot)) <= REMINDER_MATCH_WINDOW_MINUTES
+  );
+}
+
+/**
+ * Pick at most one reminder slot to fire this run.
+ * When several slots overlap (e.g. 22:00 and 22:15 with ±15 min), prefer the
+ * earliest clock time that is still due and not yet fired today.
+ * @param {number} currentMinutes Current local minutes since midnight
+ * @param {string[]} reminderTimes Configured times
+ * @param {string[]} reminderTimesFired Normalized slots already sent today
+ * @param {string} reminderFiresDate Date key stored with fired list
+ * @param {string} localDate Today's local YYYY-MM-DD
+ * @return {string | null} Normalized "HH:mm" to send for, or null
+ */
+function pickDueReminderSlot(
+  currentMinutes: number,
+  reminderTimes: string[],
+  reminderTimesFired: string[] | undefined,
+  reminderFiresDate: string | undefined,
+  localDate: string
+): string | null {
+  const fired =
+    reminderFiresDate === localDate && reminderTimesFired?.length
+      ? new Set(reminderTimesFired)
+      : new Set<string>();
+
+  const candidates: string[] = [];
+  const seen = new Set<string>();
   for (const rt of reminderTimes) {
-    const rtMinutes = toMinutes(rt);
-    const diff = Math.abs(currentMinutes - rtMinutes);
-    // Handle midnight wrap: e.g. current=5min, reminder=1435 (23:55)
-    const wrappedDiff = Math.min(diff, 1440 - diff);
-    if (wrappedDiff <= 15) return true;
+    const normalized = normalizeReminderTime(rt);
+    if (!normalized || seen.has(normalized)) continue;
+    seen.add(normalized);
+    if (fired.has(normalized)) continue;
+    if (isSlotInMatchWindow(currentMinutes, normalized)) {
+      candidates.push(normalized);
+    }
   }
-  return false;
+  if (candidates.length === 0) return null;
+  candidates.sort((a, b) => toMinutes(a) - toMinutes(b));
+  return candidates[0];
 }
 
 /**
@@ -251,6 +316,8 @@ async function processUserReminder(
     frequency: settings.frequency,
     daily_count: settings.daily_count,
     daily_count_date: settings.daily_count_date,
+    reminder_fires_date: settings.reminder_fires_date,
+    reminder_times_fired: settings.reminder_times_fired,
     tier: settings.tier,
     token_count: settings.device_tokens?.length ?? 0,
   });
@@ -294,8 +361,15 @@ async function processUserReminder(
     }
   }
 
-  // c. Time window check
-  if (!isTimeWindowMatch(currentMinutes, settings.reminder_times)) {
+  // c. Pick one due reminder slot (per-slot daily tracking; avoids double-send when windows overlap)
+  const dueSlot = pickDueReminderSlot(
+    currentMinutes,
+    settings.reminder_times,
+    settings.reminder_times_fired,
+    settings.reminder_fires_date,
+    localDate
+  );
+  if (!dueSlot) {
     console.log("processReminders: skip", {
       uid,
       reason: "time_window",
@@ -372,6 +446,7 @@ async function processUserReminder(
       type: "daily_reminder",
       tier: settings.tier,
       reminder_type: "bm",
+      scheduled_reminder_time: dueSlot,
     },
     apns: {
       payload: {
@@ -391,7 +466,7 @@ async function processUserReminder(
   });
 
   console.log(
-    `processReminders: sent to ${uid}, success=${response.successCount}, failure=${response.failureCount}`
+    `processReminders: sent to ${uid}, slot=${dueSlot}, success=${response.successCount}, failure=${response.failureCount}`
   );
 
   // Log FCM errors so we can diagnose delivery failures
@@ -437,10 +512,19 @@ async function processUserReminder(
     return;
   }
   const newDailyCount = settings.daily_count_date === localDate ? settings.daily_count + 1 : 1;
+  const priorFired =
+    settings.reminder_fires_date === localDate && settings.reminder_times_fired?.length
+      ? [...settings.reminder_times_fired]
+      : [];
+  if (!priorFired.includes(dueSlot)) {
+    priorFired.push(dueSlot);
+  }
   await db.collection(NOTIFICATION_SETTINGS_COLLECTION).doc(uid).update({
     last_notified_at: Timestamp.now(),
     daily_count: newDailyCount,
     daily_count_date: localDate,
+    reminder_times_fired: priorFired,
+    reminder_fires_date: localDate,
     updated_at: Timestamp.now(),
   });
 
@@ -452,6 +536,7 @@ async function processUserReminder(
     type: "daily_reminder",
     reminder_type: "bm",
     tier: settings.tier,
+    scheduled_reminder_time: dueSlot,
     sent_at: Timestamp.now(),
   });
 }
