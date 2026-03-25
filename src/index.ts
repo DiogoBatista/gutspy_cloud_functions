@@ -3,17 +3,17 @@ import axios from "axios";
 import * as admin from "firebase-admin";
 import { getAuth } from "firebase-admin/auth";
 import type { DocumentReference } from "firebase-admin/firestore";
-import { getFirestore, Timestamp } from "firebase-admin/firestore";
+import { FieldValue, getFirestore, Timestamp } from "firebase-admin/firestore";
 import { onDocumentCreated, onDocumentUpdated } from "firebase-functions/v2/firestore";
 import { HttpsError, onCall } from "firebase-functions/v2/https";
-import { beforeUserCreated } from "firebase-functions/v2/identity";
+import { auth as authFunctionsV1 } from "firebase-functions/v1";
 import { onSchedule, ScheduledEvent } from "firebase-functions/v2/scheduler";
 import { onObjectFinalized } from "firebase-functions/v2/storage";
 import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
-import { processReminders, processReengagementNudges } from "./notifications";
-import { AIService } from "./services/ai";
+import { processReengagementNudges, processReminders } from "./notifications";
+import { AIService, isMealImageSuitableForLog, isStoolImageSuitableForLog } from "./services/ai";
 import { SlackService } from "./services/slack";
 import { generateUserWeeklySummary } from "./user";
 
@@ -22,6 +22,14 @@ admin.initializeApp();
 // Get service instances
 const db = getFirestore();
 const auth = getAuth();
+
+/** User-facing message when a meal photo is not food/drink. */
+const WRONG_MEAL_IMAGE_MESSAGE =
+  "This photo does not look like food or drink. Try a clearer meal photo or log without a picture.";
+
+/** User-facing message when a BM photo is not a stool log. */
+const WRONG_STOOL_IMAGE_MESSAGE =
+  "This photo does not look like a bowel movement log. Use Add meal for food, or try a clearer photo and enter details manually.";
 
 /**
  * Shared: run AI image analysis on a digestion record and update the doc.
@@ -54,6 +62,17 @@ async function runDigestionImageAnalysis(
 
     console.log("resultJson", resultJson);
 
+    if (!isStoolImageSuitableForLog(resultJson)) {
+      await docRef.update({
+        status: "failed",
+        error_details: {
+          code: "WRONG_IMAGE_TYPE",
+          message: WRONG_STOOL_IMAGE_MESSAGE,
+        },
+      });
+      return;
+    }
+
     await docRef.update({
       status: "processed",
       processed_at: Timestamp.fromDate(new Date()),
@@ -77,6 +96,7 @@ async function runDigestionImageAnalysis(
     await docRef.update({
       status: "failed",
       error_details: {
+        code: "ANALYSIS_ERROR",
         message: error instanceof Error ? error.message : String(error),
       },
     });
@@ -121,6 +141,19 @@ async function runMealLogImageAnalysis(
     const base64Encoded = fileBuffer.toString("base64");
     const aiService = AIService.getInstance();
     const resultJson = await aiService.analyzeMealImage(base64Encoded);
+    if (!isMealImageSuitableForLog(resultJson)) {
+      await mealLogRef.update({
+        status: "failed",
+        error_details: {
+          code: "WRONG_IMAGE_TYPE",
+          message: WRONG_MEAL_IMAGE_MESSAGE,
+        },
+        ai_name: FieldValue.delete(),
+        ai_ingredients: FieldValue.delete(),
+        processed_at: FieldValue.delete(),
+      });
+      return;
+    }
     const aiName = resultJson?.image_recognition?.name ?? "";
     const aiIngredients = resultJson?.ingredient_extraction ?? [];
     await mealLogRef.update({
@@ -128,12 +161,14 @@ async function runMealLogImageAnalysis(
       ai_name: aiName,
       ai_ingredients: aiIngredients,
       processed_at: Timestamp.fromDate(new Date()),
+      error_details: FieldValue.delete(),
     });
   } catch (error) {
     console.error("Failed to process meal_log image:", error);
     await mealLogRef.update({
-      status: "error",
+      status: "failed",
       error_details: {
+        code: "ANALYSIS_ERROR",
         message: error instanceof Error ? error.message : String(error),
       },
     });
@@ -226,10 +261,14 @@ export const fileCreated = onObjectFinalized(async (event) => {
           belongsToUser,
         });
         if (existingDoc.exists && existingData && belongsToUser) {
+          const priorAnalysis =
+            existingData.analysis && typeof existingData.analysis === "object"
+              ? (existingData.analysis as Record<string, unknown>)
+              : {};
           await existingDoc.ref.update({
             filename,
             status: "to_be_processed",
-            analysis: { source: "ai" },
+            analysis: { ...priorAnalysis, source: "ai" },
           });
           console.log("Digestion: attached photo to existing record", candidateRecordId);
           // Run AI here so the file is guaranteed to exist (same trigger); app's on-demand call will get cached.
@@ -341,6 +380,18 @@ export const onImageProcessingRecordCreated = onDocumentCreated(
       const aiService = AIService.getInstance();
       const resultJson = await aiService.analyzeMealImage(base64Encoded);
 
+      if (!isMealImageSuitableForLog(resultJson)) {
+        await snapshot.ref.update({
+          status: "error",
+          error_details: {
+            code: "WRONG_IMAGE_TYPE",
+            message: WRONG_MEAL_IMAGE_MESSAGE,
+          },
+        });
+        fs.unlinkSync(tempFilePath);
+        return null;
+      }
+
       await snapshot.ref.update({
         status: "processed",
         nutritional_report: resultJson,
@@ -368,6 +419,7 @@ export const onImageProcessingRecordCreated = onDocumentCreated(
       await snapshot.ref.update({
         status: "error",
         error_details: {
+          code: "ANALYSIS_ERROR",
           message: error instanceof Error ? error.message : String(error),
           response_preview: error instanceof Error ? error.stack : String(error),
         },
@@ -398,6 +450,37 @@ export const onSymptomLogCreated = onDocumentCreated(
       );
     } catch (error) {
       console.error("Failed to send Slack notification for symptom log:", error);
+    }
+  }
+);
+
+// Notify Slack when a user submits AI analysis feedback (wrong scan / insights)
+export const onAiAnalysisFeedbackCreated = onDocumentCreated(
+  "/ai_analysis_feedback/{feedbackId}",
+  async (event) => {
+    const snapshot = event.data;
+    if (!snapshot) return;
+
+    const data = snapshot.data();
+    if (!data?.userId || typeof data.userId !== "string") {
+      console.log("onAiAnalysisFeedbackCreated: missing userId");
+      return;
+    }
+
+    try {
+      const slackService = SlackService.getInstance();
+      await slackService.notifyAiAnalysisFeedback({
+        feedbackId: snapshot.ref.id,
+        userId: data.userId,
+        context: typeof data.context === "string" ? data.context : "",
+        recordId: typeof data.recordId === "string" ? data.recordId : "",
+        userNote: data.user_note ?? null,
+        aiSummary: data.ai_summary ?? null,
+        storagePath: data.storage_path ?? null,
+        appVersion: data.app_version ?? null,
+      });
+    } catch (error) {
+      console.error("Failed to send Slack notification for AI analysis feedback:", error);
     }
   }
 );
@@ -619,50 +702,80 @@ export const requestDigestionImageAnalysis = onCall({ enforceAppCheck: false }, 
     recordId,
     filePath,
   });
-  const [buffer] = await file.download();
-  const base64Encoded = buffer.toString("base64");
 
-  console.log("requestDigestionImageAnalysis:ai-analysis-start", {
-    uid: request.auth.uid,
-    recordId,
-    filePath,
-  });
-  const aiService = AIService.getInstance();
-  const resultJson = await aiService.analyzeDigestionImage(base64Encoded);
+  try {
+    const [buffer] = await file.download();
+    const base64Encoded = buffer.toString("base64");
 
-  console.log("requestDigestionImageAnalysis:ai-analysis-finished", {
-    uid: request.auth.uid,
-    recordId,
-    filePath,
-    concernsCount: resultJson.concerns?.length ?? 0,
-    recommendationsCount: resultJson.recommendations?.length ?? 0,
-    source: "ai",
-  });
+    console.log("requestDigestionImageAnalysis:ai-analysis-start", {
+      uid: request.auth.uid,
+      recordId,
+      filePath,
+    });
+    const aiService = AIService.getInstance();
+    const resultJson = await aiService.analyzeDigestionImage(base64Encoded);
 
-  await docSnap.ref.update({
-    status: "processed",
-    processed_at: Timestamp.fromDate(new Date()),
-    analysis: {
-      ...(data.analysis || {}),
-      bristol_scale: resultJson.analysis.bristol_stool_scale.toString(),
-      color: resultJson.analysis.color,
-      consistency: resultJson.analysis.consistency,
-      shape: resultJson.analysis.shape,
-      size: resultJson.analysis.size,
-      has_blood: resultJson.analysis.presence_of_blood,
-      has_mucus: resultJson.analysis.presence_of_mucus,
+    console.log("requestDigestionImageAnalysis:ai-analysis-finished", {
+      uid: request.auth.uid,
+      recordId,
+      filePath,
+      concernsCount: resultJson.concerns?.length ?? 0,
+      recommendationsCount: resultJson.recommendations?.length ?? 0,
       source: "ai",
-    },
-    ai_concerns: resultJson.concerns,
-    ai_recommendations: resultJson.recommendations,
-  });
+    });
 
-  console.log("requestDigestionImageAnalysis:success", {
-    uid: request.auth.uid,
-    recordId,
-    filePath,
-  });
-  return { cached: false };
+    if (!isStoolImageSuitableForLog(resultJson)) {
+      await docSnap.ref.update({
+        status: "failed",
+        error_details: {
+          code: "WRONG_IMAGE_TYPE",
+          message: WRONG_STOOL_IMAGE_MESSAGE,
+        },
+      });
+      throw new HttpsError("failed-precondition", WRONG_STOOL_IMAGE_MESSAGE);
+    }
+
+    await docSnap.ref.update({
+      status: "processed",
+      processed_at: Timestamp.fromDate(new Date()),
+      analysis: {
+        ...(data.analysis || {}),
+        bristol_scale: resultJson.analysis.bristol_stool_scale.toString(),
+        color: resultJson.analysis.color,
+        consistency: resultJson.analysis.consistency,
+        shape: resultJson.analysis.shape,
+        size: resultJson.analysis.size,
+        has_blood: resultJson.analysis.presence_of_blood,
+        has_mucus: resultJson.analysis.presence_of_mucus,
+        source: "ai",
+      },
+      ai_concerns: resultJson.concerns,
+      ai_recommendations: resultJson.recommendations,
+    });
+
+    console.log("requestDigestionImageAnalysis:success", {
+      uid: request.auth.uid,
+      recordId,
+      filePath,
+    });
+    return { cached: false };
+  } catch (err) {
+    if (err instanceof HttpsError) {
+      throw err;
+    }
+    console.error("requestDigestionImageAnalysis:error", err);
+    await docSnap.ref.update({
+      status: "failed",
+      error_details: {
+        code: "ANALYSIS_ERROR",
+        message: err instanceof Error ? err.message : String(err),
+      },
+    });
+    throw new HttpsError(
+      "internal",
+      err instanceof Error ? err.message : "Could not analyze image"
+    );
+  }
 });
 
 export const generateWeeklySummaries = onSchedule(
@@ -760,6 +873,18 @@ export const onMealRecordRetry = onDocumentUpdated("/meal_records/{recordId}", a
     const aiService = AIService.getInstance();
     const resultJson = await aiService.analyzeMealImage(base64Encoded);
 
+    if (!isMealImageSuitableForLog(resultJson)) {
+      await event.data.after.ref.update({
+        status: "error",
+        error_details: {
+          code: "WRONG_IMAGE_TYPE",
+          message: WRONG_MEAL_IMAGE_MESSAGE,
+        },
+      });
+      fs.unlinkSync(tempFilePath);
+      return null;
+    }
+
     await event.data.after.ref.update({
       status: "processed",
       nutritional_report: resultJson,
@@ -775,6 +900,7 @@ export const onMealRecordRetry = onDocumentUpdated("/meal_records/{recordId}", a
     await event.data.after.ref.update({
       status: "error",
       error_details: {
+        code: "ANALYSIS_ERROR",
         message: error instanceof Error ? error.message : String(error),
         response_preview: error instanceof Error ? error.stack : String(error),
       },
@@ -783,22 +909,21 @@ export const onMealRecordRetry = onDocumentUpdated("/meal_records/{recordId}", a
   }
 });
 
-// Cloud Function to handle new user creation
-export const onUserCreated = beforeUserCreated(async (event) => {
-  const user = event.data;
-  if (!user) {
-    console.log("No user data in event");
-    return;
-  }
-
+// New user signup: Gen1 auth trigger (non-blocking). Export name must differ from any prior Gen2
+// `onUserCreated` deploy so Firebase does not try to apply Gen2 CPU settings to Gen1.
+// After first successful deploy, delete the legacy Cloud Function `onUserCreated` in GCP/Firebase
+// if it still exists (from the old `beforeUserCreated` experiment) to avoid duplicate Kit/Slack.
+// Anonymous users have no email: Kit is skipped; Slack still gets a short notice with UID only.
+export const onFirebaseAuthUserCreate = authFunctionsV1.user().onCreate(async (user) => {
   try {
-    // Send notification to Kit
-    const kitApiKey = process.env.KIT_API_KEY;
-    if (kitApiKey) {
+    const email = user.email?.trim() || null;
+
+    if (email && process.env.KIT_API_KEY) {
+      const kitApiKey = process.env.KIT_API_KEY;
       await axios.post(
         "https://api.kit.com/v4/subscribers",
         {
-          email_address: user.email,
+          email_address: email,
           first_name: user.displayName?.split(" ")[0] || "",
           state: "active",
           fields: {
@@ -814,18 +939,15 @@ export const onUserCreated = beforeUserCreated(async (event) => {
           },
         }
       );
-      console.log("Successfully added user to Kit:", user.email);
+      console.log("Successfully added user to Kit:", email);
+    } else if (!email) {
+      console.log("Skipping Kit (no email, e.g. anonymous user):", user.uid);
     }
 
-    // Send notification to Slack
     try {
       const slackService = SlackService.getInstance();
-      await slackService.notifyUserCreated(
-        user.email || "No email",
-        user.uid,
-        user.displayName || undefined
-      );
-      console.log("Successfully sent notification to Slack");
+      await slackService.notifyUserCreated(user.uid, email, user.displayName ?? undefined);
+      console.log("Successfully sent user signup notification to Slack");
     } catch (error) {
       console.error("Failed to send Slack notification:", error);
     }

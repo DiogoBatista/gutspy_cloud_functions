@@ -208,21 +208,139 @@ export class SlackService {
   }
 
   /**
-   * Sends a notification to Slack when a new user is created
-   * @param {string} userEmail - The email of the new user
-   * @param {string} userId - The user ID
-   * @param {string} displayName - The display name of the user (optional)
+   * Notifies Slack when a user reports incorrect or unexpected AI analysis (meal or BM).
+   * @param {object} payload - Feedback document fields
+   * @param {string} payload.feedbackId - Firestore document ID
+   * @param {string} payload.userId - Firebase Auth UID
+   * @param {string} payload.context - "meal_log" | "digestion"
+   * @param {string} payload.recordId - meal_logs or digestion_records doc ID
+   * @param {string | null | undefined} payload.userNote - Optional user explanation
+   * @param {string | null | undefined} payload.aiSummary - What the app showed (text only)
+   * @param {string | null | undefined} payload.storagePath - Optional Storage path for the photo
+   * @param {string | null | undefined} payload.appVersion - Client app version
+   * @return {Promise<void>}
    */
-  async notifyUserCreated(userEmail: string, userId: string, displayName?: string): Promise<void> {
+  async notifyAiAnalysisFeedback(payload: {
+    feedbackId: string;
+    userId: string;
+    context: string;
+    recordId: string;
+    userNote?: string | null;
+    aiSummary?: string | null;
+    storagePath?: string | null;
+    appVersion?: string | null;
+  }): Promise<void> {
+    if (!this.webhookUrl) {
+      console.log("Slack webhook URL not configured, skipping AI feedback notification");
+      return;
+    }
+
+    const maxSnippet = 1800;
+    /**
+     * Truncate and neutralize triple backticks so Slack fenced blocks stay valid.
+     * @param {string | null | undefined} s
+     * @param {number} max
+     * @return {string}
+     */
+    const clip = (s: string | null | undefined, max: number): string => {
+      if (s == null || s === "") return "—";
+      const t = String(s).trim().replace(/```/g, " [code-fence] ");
+      return t.length > max ? `${t.slice(0, max)}…` : t;
+    };
+
+    try {
+      let userEmail = "Unknown user";
+      try {
+        const userRecord = await admin.auth().getUser(payload.userId);
+        userEmail = userRecord.email || "Unknown user";
+      } catch (error) {
+        console.log("Could not fetch user info for Slack notification:", error);
+      }
+
+      const contextLabel =
+        payload.context === "meal_log"
+          ? "Meal log"
+          : payload.context === "digestion"
+            ? "Bowel movement log"
+            : payload.context;
+
+      const noteBlock = clip(payload.userNote, maxSnippet);
+      const summaryBlock = clip(payload.aiSummary, maxSnippet);
+      const pathLine = payload.storagePath ? `\n*Storage path:* \`${payload.storagePath}\`` : "";
+      const versionLine = payload.appVersion ? `\n*App version:* ${payload.appVersion}` : "";
+
+      const body =
+        "*AI analysis feedback* 📝\n\n" +
+        `*User:* ${userEmail}\n` +
+        "*User ID:* `" +
+        payload.userId +
+        "`\n" +
+        `*Context:* ${contextLabel}\n` +
+        "*Record ID:* `" +
+        payload.recordId +
+        "`\n" +
+        "*Feedback ID:* `" +
+        payload.feedbackId +
+        "`" +
+        pathLine +
+        versionLine +
+        "\n" +
+        `*Time:* ${new Date().toLocaleString()}\n\n` +
+        `*AI summary (what they saw):*\n\`\`\`\n${summaryBlock}\n\`\`\`\n\n` +
+        `*User note:*\n\`\`\`\n${noteBlock}\n\`\`\``;
+
+      const message = {
+        text: this.prefix("AI analysis feedback"),
+        blocks: [
+          {
+            type: "section",
+            text: {
+              type: "mrkdwn",
+              text: this.prefix(body),
+            },
+          },
+          {
+            type: "context",
+            elements: [
+              {
+                type: "mrkdwn",
+                text: isEmulator() ? "GutSpy App Activity (emulator)" : "GutSpy App Activity",
+              },
+            ],
+          },
+        ],
+      };
+
+      await this.sendToSlack(message);
+    } catch (error) {
+      console.error("Failed to send AI feedback notification to Slack:", error);
+    }
+  }
+
+  /**
+   * Sends a notification to Slack when a new Auth user is created (email or anonymous).
+   * @param {string} userId - Firebase Auth UID
+   * @param {string | null | undefined} userEmail - Email when present; anonymous users have none
+   * @param {string | null | undefined} displayName - Optional display name
+   * @return {Promise<void>}
+   */
+  async notifyUserCreated(
+    userId: string,
+    userEmail: string | null | undefined,
+    displayName?: string | null
+  ): Promise<void> {
     if (!this.webhookUrl) {
       console.log("Slack webhook URL not configured, skipping user creation notification");
       return;
     }
 
     try {
-      const body = `*New user signed up!* 🎉\n\n*Email:* ${userEmail}\n*User ID:* \`${userId}\`${displayName ? `\n*Name:* ${displayName}` : ""}\n*Time:* ${new Date().toLocaleString()}`;
+      const hasEmail = !!(userEmail && String(userEmail).trim());
+      const body = hasEmail
+        ? `*New user signed up* 🎉\n\n*Email:* ${userEmail}\n*User ID:* \`${userId}\`${displayName ? `\n*Name:* ${displayName}` : ""}\n*Time:* ${new Date().toLocaleString()}`
+        : `*New user signed up* (anonymous)\n\nNo email on this account (anonymous or not yet linked).\n\n*User ID:* \`${userId}\`${displayName ? `\n*Name:* ${displayName}` : ""}\n*Time:* ${new Date().toLocaleString()}`;
       const message = {
-        text: this.prefix("🎉 New user signed up!"),
+        text: this.prefix(hasEmail ? "New user signed up" : "New user (anonymous)"),
         blocks: [
           {
             type: "section",

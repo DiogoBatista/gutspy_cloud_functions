@@ -14,6 +14,13 @@ service cloud.firestore {
       allow read, update, delete: if request.auth != null && resource.data.userID == request.auth.uid;
       allow create: if request.auth != null && request.resource.data.userID == request.auth.uid;
     }
+    match /ai_analysis_feedback/{id} {
+      allow create: if request.auth != null
+        && request.resource.data.userId == request.auth.uid
+        && request.resource.data.context is string
+        && request.resource.data.recordId is string;
+      allow read, update, delete: if false;
+    }
     match /notification_history/{id} {
       allow read: if request.auth != null && resource.data.userID == request.auth.uid;
       allow create, update, delete: if false;

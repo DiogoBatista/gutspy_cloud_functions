@@ -28,8 +28,16 @@ function getApiKey(): string {
 // Get and validate API key
 const validatedApiKey: string = getApiKey();
 
+/** Stool photo pipeline: only "stool" may receive a full BM-style analysis. */
+export type StoolImageSuitability = "stool" | "not_stool" | "unclear";
+
+/** Meal photo pipeline: only "meal" may receive food recognition. */
+export type MealImageSuitability = "meal" | "not_meal" | "unclear";
+
 /** Interface for digestion analysis results */
 export interface DigestionAnalysisResult {
+  /** Set when analyzing an image; omitted for text-only analyzeDigestionData. */
+  image_suitability?: StoolImageSuitability;
   analysis: {
     color: string;
     consistency: string;
@@ -46,6 +54,7 @@ export interface DigestionAnalysisResult {
 
 /** Interface for meal analysis results */
 export interface MealAnalysisResult {
+  image_suitability: MealImageSuitability;
   image_recognition: {
     name: string;
   };
@@ -81,6 +90,26 @@ export interface MealAnalysisResult {
 export interface CorrelationAnalysisResult {
   waterAndDigestion: string[];
   dietAndDigestion: string[];
+}
+
+/**
+ * True when the model classifies the image as appropriate for meal logging.
+ * @param {MealAnalysisResult} result Parsed meal image analysis including image_suitability.
+ * @return {boolean} True when image_suitability resolves to "meal".
+ */
+export function isMealImageSuitableForLog(result: MealAnalysisResult): boolean {
+  const s = String(result.image_suitability ?? "").toLowerCase();
+  return s === "meal";
+}
+
+/**
+ * True when the model classifies the image as a bowel movement log photo.
+ * @param {DigestionAnalysisResult} result Parsed digestion image analysis including image_suitability.
+ * @return {boolean} True when image_suitability resolves to "stool".
+ */
+export function isStoolImageSuitableForLog(result: DigestionAnalysisResult): boolean {
+  const s = String(result.image_suitability ?? "").toLowerCase();
+  return s === "stool";
 }
 
 /** Service class for handling AI operations using Gemini */
@@ -195,6 +224,7 @@ export class AIService {
 
     const outputFormat = JSON.stringify(
       {
+        image_suitability: "meal",
         image_recognition: {
           name: "",
         },
@@ -229,21 +259,13 @@ export class AIService {
       2
     );
 
-    const prompt =
-      "Given an image provided, assume that you are working for an app and do the following: " +
-      "Image Recognition: Utilize advanced image recognition technology to analyze user-uploaded food images. The system should be capable of identifying the dish presented in the image with high accuracy. " +
-      "Ingredient Extraction: Once the dish is identified, deploy a food recognition algorithm to dissect the image and determine the individual ingredients that make up the dish. The algorithm should be trained on a comprehensive dataset of food images and their corresponding ingredients to ensure broad coverage of various cuisines and dish types. " +
-      "Ingredient Categorization: Organize the extracted ingredients into standard food categories. " +
-      "These categories may include, but are not limited to, the following: " +
-      foodCategoriesJsonString +
-      "Nutritional Information: Provide numerical values only for nutritional information. All measurements should be in grams (g) for macronutrients, milligrams (mg) for micronutrients, and absolute numbers for calories. Do not include text descriptions, ranges, or approximations - use single numerical values even if estimated. " +
-      "Caloric Breakdown: Calculate specific numerical values for the caloric content. Provide exact numbers for the breakdown of calories by macronutrient (carbohydrates, proteins, fats), avoiding any text descriptions or ranges. " +
-      "Description: Generate a tentative name for the dish and a brief description based on the identified ingredients. " +
-      "Output: Respond ONLY with a JSON object that matches exactly the following template, without any additional text, notes, or explanations. All nutritional values must be numbers, not strings or text descriptions: " +
-      outputFormat +
-      " The ultimate goal is to provide users with an informative and engaging experience that helps them understand the composition of their meals and encourages informed dietary choices. Remember to provide ONLY the JSON response without any additional commentary or markdown formatting, and ensure all nutritional values are numerical.";
+    const prompt = `You are classifying a user photo for a MEAL log in an IBS journaling app. STEP 1 (mandatory): Set image_suitability to exactly one of: meal | not_meal | unclear. Use "meal" only if the image clearly shows food or drink someone would log as a meal or snack. Use "not_meal" for toilet or stool photos, medical samples, pets, people, scenery, documents, empty plates with no food, or any image that is clearly not food or drink. Use "unclear" only if the image is too dark, blurry, or unusable to tell. Treat "unclear" like not_meal for safety: still fill the JSON template but the app will reject the scan. STEP 2: Only if the image is actually food or drink, complete recognition and nutrition fields accurately. If image_suitability is not_meal or unclear, still return valid JSON with placeholder strings and zeros where numbers are required, but the app will ignore those fields. Image Recognition: Utilize advanced image recognition technology to analyze user-uploaded food images when appropriate. The system should be capable of identifying the dish presented in the image with high accuracy. Ingredient Extraction: Once the dish is identified, deploy a food recognition algorithm to dissect the image and determine the individual ingredients that make up the dish. The algorithm should be trained on a comprehensive dataset of food images and their corresponding ingredients to ensure broad coverage of various cuisines and dish types. Ingredient Categorization: Organize the extracted ingredients into standard food categories. These categories may include, but are not limited to, the following: ${foodCategoriesJsonString}Nutritional Information: Provide numerical values only for nutritional information. All measurements should be in grams (g) for macronutrients, milligrams (mg) for micronutrients, and absolute numbers for calories. Do not include text descriptions, ranges, or approximations - use single numerical values even if estimated. Caloric Breakdown: Calculate specific numerical values for the caloric content. Provide exact numbers for the breakdown of calories by macronutrient (carbohydrates, proteins, fats), avoiding any text descriptions or ranges. Description: Generate a tentative name for the dish and a brief description based on the identified ingredients. Output: Respond ONLY with a JSON object that matches exactly the following template, without any additional text, notes, or explanations. All nutritional values must be numbers, not strings or text descriptions: ${outputFormat} The ultimate goal is to provide users with an informative and engaging experience that helps them understand the composition of their meals and encourages informed dietary choices. Remember to provide ONLY the JSON response without any additional commentary or markdown formatting, and ensure all nutritional values are numerical.`;
 
-    return this.analyzeImage<MealAnalysisResult>(base64Image, prompt);
+    const parsed = await this.analyzeImage<MealAnalysisResult>(base64Image, prompt);
+    return {
+      ...parsed,
+      image_suitability: parsed.image_suitability ?? "unclear",
+    };
   }
 
   /**
@@ -254,6 +276,7 @@ export class AIService {
   async analyzeDigestionImage(base64Image: string): Promise<DigestionAnalysisResult> {
     const outputFormat = JSON.stringify(
       {
+        image_suitability: "stool",
         analysis: {
           color: "",
           consistency: "",
@@ -271,20 +294,13 @@ export class AIService {
       2
     );
 
-    const prompt =
-      "You are an assistant providing general information about stool appearance. Do not diagnose. " +
-      "Use language such as 'may be consistent with', 'often associated with'. Never claim cures, certainty, or medical authority. " +
-      "Always include a short, gentle safety note in recommendations (e.g. 'This is not medical advice; discuss with a healthcare provider if concerned.'). " +
-      "If you identify blood or severe abnormality, prioritize 'seek medical advice' in recommendations. " +
-      "Analyze the provided image: " +
-      "1. Visual Assessment: Evaluate color, consistency, shape, size; identify any blood or mucus. " +
-      "2. Bristol Stool Scale: Classify 1-7. " +
-      "3. Concerns: List potential concerns using 'may be consistent with' / 'often associated with'; no diagnosis. " +
-      "4. Recommendations: If blood or severe abnormality, prioritize seeking medical advice; otherwise lifestyle/hydration/fiber. " +
-      "Output: Respond ONLY with a JSON object that matches exactly the following template, without any additional text or explanations: " +
-      outputFormat;
+    const prompt = `You are an assistant providing general information about stool appearance for a BOWEL MOVEMENT log in an IBS journaling app. Do not diagnose. STEP 1 (mandatory): Set image_suitability to exactly one of: stool | not_stool | unclear. Use "stool" only if the image clearly shows human feces / a bowel movement (e.g. Bristol-style toilet photo). Use "not_stool" for food, drinks, restaurant plates, pets, people, empty toilet bowls, unrelated objects, or anything that is clearly not a stool log photo. Use "unclear" only if the image is too dark, blurry, or unusable. Treat "unclear" like not_stool for safety. STEP 2: Only if image_suitability is stool, complete the analysis fields below. If not_stool or unclear, still return valid JSON with neutral placeholder analysis values; the app will reject the scan and not use them. Use language such as 'may be consistent with', 'often associated with'. Never claim cures, certainty, or medical authority. Always include a short, gentle safety note in recommendations (e.g. 'This is not medical advice; discuss with a healthcare provider if concerned.'). If you identify blood or severe abnormality, prioritize 'seek medical advice' in recommendations. When image_suitability is stool, analyze the image: 1. Visual Assessment: Evaluate color, consistency, shape, size; identify any blood or mucus. 2. Bristol Stool Scale: Classify 1-7. 3. Concerns: List potential concerns using 'may be consistent with' / 'often associated with'; no diagnosis. 4. Recommendations: If blood or severe abnormality, prioritize seeking medical advice; otherwise lifestyle/hydration/fiber. Output: Respond ONLY with a JSON object that matches exactly the following template, without any additional text or explanations: ${outputFormat}`;
 
-    return this.analyzeImage<DigestionAnalysisResult>(base64Image, prompt);
+    const parsed = await this.analyzeImage<DigestionAnalysisResult>(base64Image, prompt);
+    return {
+      ...parsed,
+      image_suitability: parsed.image_suitability ?? "unclear",
+    };
   }
 
   /**
