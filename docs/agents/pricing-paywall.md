@@ -32,7 +32,7 @@ IBS Plus:
 - Advanced trends
 - Reminders settings and quiet hours
 - Guided 14-day mode
-- Doctor report export (PDF + CSV)
+- Doctor report export (PDF)
 
 ### Paywall placement rules
 Never block:
