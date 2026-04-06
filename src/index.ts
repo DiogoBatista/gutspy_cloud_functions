@@ -14,7 +14,7 @@ import * as os from "os";
 import * as path from "path";
 import { processReengagementNudges, processReminders } from "./notifications";
 import { AIService, isMealImageSuitableForLog, isStoolImageSuitableForLog } from "./services/ai";
-import { SlackService } from "./services/slack";
+import { SlackService, slackClientMetaFromFirestoreData } from "./services/slack";
 import { generateUserWeeklySummary } from "./user";
 
 admin.initializeApp();
@@ -403,7 +403,12 @@ export const onImageProcessingRecordCreated = onDocumentCreated(
         try {
           const slackService = SlackService.getInstance();
           const mealName = resultJson?.image_recognition?.name;
-          await slackService.notifyMealCreated(newData.userID, recordId, mealName);
+          await slackService.notifyMealCreated(
+            newData.userID,
+            recordId,
+            mealName,
+            slackClientMetaFromFirestoreData(newData as Record<string, unknown>)
+          );
         } catch (error) {
           console.error("Failed to send Slack notification for meal record:", error);
           // Continue with processing even if Slack notification fails
@@ -446,7 +451,8 @@ export const onSymptomLogCreated = onDocumentCreated(
         data.userID,
         snapshot.ref.id,
         data.symptom_label ?? "Symptom",
-        data.severity
+        data.severity,
+        slackClientMetaFromFirestoreData(data as Record<string, unknown>)
       );
     } catch (error) {
       console.error("Failed to send Slack notification for symptom log:", error);
@@ -478,6 +484,9 @@ export const onAiAnalysisFeedbackCreated = onDocumentCreated(
         aiSummary: data.ai_summary ?? null,
         storagePath: data.storage_path ?? null,
         appVersion: data.app_version ?? null,
+        clientFirebaseProjectId:
+          typeof data.firebase_project_id === "string" ? data.firebase_project_id : null,
+        appEnv: typeof data.app_env === "string" ? data.app_env : null,
       });
     } catch (error) {
       console.error("Failed to send Slack notification for AI analysis feedback:", error);
@@ -511,7 +520,12 @@ export const onDigestionRecordCreated = onDocumentCreated(
     if (data.skip_slack !== true) {
       try {
         const slackService = SlackService.getInstance();
-        await slackService.notifyDigestionCreated(data.userID, docRef.id, data.analysis.source);
+        await slackService.notifyDigestionCreated(
+          data.userID,
+          docRef.id,
+          data.analysis.source,
+          slackClientMetaFromFirestoreData(data as Record<string, unknown>)
+        );
       } catch (error) {
         console.error("Failed to send Slack notification for digestion record:", error);
         // Continue with processing even if Slack notification fails

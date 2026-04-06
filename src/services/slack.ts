@@ -1,4 +1,26 @@
 import * as admin from "firebase-admin";
+import { getBackendEnvironment } from "../utils/backendEnvironment";
+
+/** Optional client-reported fields stored on Firestore docs (snake_case). */
+export type SlackClientMeta = {
+  clientFirebaseProjectId?: string | null;
+  appVersion?: string | null;
+  appEnv?: string | null;
+};
+
+/**
+ * Maps Firestore document data to Slack client meta (supports old clients without fields).
+ * @param {Record<string, unknown>} data - Raw Firestore document data
+ * @return {SlackClientMeta}
+ */
+export function slackClientMetaFromFirestoreData(data: Record<string, unknown>): SlackClientMeta {
+  return {
+    clientFirebaseProjectId:
+      typeof data.firebase_project_id === "string" ? data.firebase_project_id : null,
+    appVersion: typeof data.app_version === "string" ? data.app_version : null,
+    appEnv: typeof data.app_env === "string" ? data.app_env : null,
+  };
+}
 
 /** True when Cloud Functions are running in the Firebase Emulator (firebase emulators:start). */
 /** @return {boolean} True when Cloud Functions are running in the Firebase Emulator (firebase emulators:start). */
@@ -34,6 +56,38 @@ export class SlackService {
   }
 
   /**
+   * Staging tag for Slack notification title lines (list previews).
+   * @param {string} title - Short title without staging tag
+   * @return {string}
+   */
+  private stagingTag(title: string): string {
+    const { label } = getBackendEnvironment();
+    return label === "Staging" ? `[STAGING] ${title}` : title;
+  }
+
+  /**
+   * Backend (Cloud Functions project) plus optional client app metadata for Slack bodies.
+   * @param {SlackClientMeta} meta - Client fields from Firestore or Auth-only flows
+   * @return {string} Markdown lines to append
+   */
+  private buildEnvironmentSection(meta: SlackClientMeta = {}): string {
+    const backend = getBackendEnvironment();
+    const lines: string[] = [`*Backend:* ${backend.label} (\`${backend.projectId}\`)`];
+    const cp = meta.clientFirebaseProjectId?.trim();
+    lines.push(cp ? `*Client Firebase project:* \`${cp}\`` : "*Client Firebase project:* —");
+    if (cp && cp !== backend.projectId) {
+      lines.push(
+        "⚠️ *Client/backend project mismatch:* the app Firebase config may not match the project handling this event (e.g. plist vs deployed backend)."
+      );
+    }
+    const v = meta.appVersion?.trim();
+    lines.push(v ? `*App version:* ${v}` : "*App version:* —");
+    const ae = meta.appEnv?.trim();
+    lines.push(ae ? `*App env:* ${ae}` : "*App env:* —");
+    return `\n\n${lines.join("\n")}`;
+  }
+
+  /**
    * Gets the singleton instance of SlackService
    * @return {SlackService} The singleton instance
    */
@@ -49,8 +103,14 @@ export class SlackService {
    * @param {string} userId - The user ID who created the meal
    * @param {string} mealId - The meal record ID
    * @param {string} mealName - The name of the meal (if available)
+   * @param {SlackClientMeta} [clientMeta] - Optional client app metadata from Firestore
    */
-  async notifyMealCreated(userId: string, mealId: string, mealName?: string): Promise<void> {
+  async notifyMealCreated(
+    userId: string,
+    mealId: string,
+    mealName?: string,
+    clientMeta?: SlackClientMeta
+  ): Promise<void> {
     if (!this.webhookUrl) {
       console.log("Slack webhook URL not configured, skipping meal notification");
       return;
@@ -66,9 +126,10 @@ export class SlackService {
         console.log("Could not fetch user info for Slack notification:", error);
       }
 
-      const body = `*New meal recorded!* 🍽️\n\n*User:* ${userEmail}\n*User ID:* \`${userId}\`\n*Meal ID:* \`${mealId}\`${mealName ? `\n*Meal:* ${mealName}` : ""}\n*Time:* ${new Date().toLocaleString()}`;
+      const envSection = this.buildEnvironmentSection(clientMeta);
+      const body = `*New meal recorded!* 🍽️\n\n*User:* ${userEmail}\n*User ID:* \`${userId}\`\n*Meal ID:* \`${mealId}\`${mealName ? `\n*Meal:* ${mealName}` : ""}\n*Time:* ${new Date().toLocaleString()}${envSection}`;
       const message = {
-        text: this.prefix("🍽️ New meal recorded!"),
+        text: this.prefix(this.stagingTag("🍽️ New meal recorded!")),
         blocks: [
           {
             type: "section",
@@ -100,8 +161,14 @@ export class SlackService {
    * @param {string} userId - The user ID who created the digestion record
    * @param {string} digestionId - The digestion record ID
    * @param {string} source - The source of the digestion record (ai/manual)
+   * @param {SlackClientMeta} [clientMeta] - Optional client app metadata from Firestore
    */
-  async notifyDigestionCreated(userId: string, digestionId: string, source: string): Promise<void> {
+  async notifyDigestionCreated(
+    userId: string,
+    digestionId: string,
+    source: string,
+    clientMeta?: SlackClientMeta
+  ): Promise<void> {
     if (!this.webhookUrl) {
       console.log("Slack webhook URL not configured, skipping digestion notification");
       return;
@@ -119,9 +186,10 @@ export class SlackService {
 
       const emoji = source === "ai" ? "🤖" : "✍️";
       const sourceText = source === "ai" ? "AI Analysis" : "Manual Entry";
-      const body = `*New digestion record!* 💩\n\n*User:* ${userEmail}\n*User ID:* \`${userId}\`\n*Record ID:* \`${digestionId}\`\n*Source:* ${emoji} ${sourceText}\n*Time:* ${new Date().toLocaleString()}`;
+      const envSection = this.buildEnvironmentSection(clientMeta);
+      const body = `*New digestion record!* 💩\n\n*User:* ${userEmail}\n*User ID:* \`${userId}\`\n*Record ID:* \`${digestionId}\`\n*Source:* ${emoji} ${sourceText}\n*Time:* ${new Date().toLocaleString()}${envSection}`;
       const message = {
-        text: this.prefix("💩 New digestion record!"),
+        text: this.prefix(this.stagingTag("💩 New digestion record!")),
         blocks: [
           {
             type: "section",
@@ -154,12 +222,14 @@ export class SlackService {
    * @param {string} symptomLogId - The symptom log document ID
    * @param {string} symptomLabel - The display name of the symptom (e.g. "Bloating", "Cramps")
    * @param {number} [severity] - Optional severity 0–3 (None, Mild, Moderate, Severe)
+   * @param {SlackClientMeta} [clientMeta] - Optional client app metadata from Firestore
    */
   async notifySymptomCreated(
     userId: string,
     symptomLogId: string,
     symptomLabel: string,
-    severity?: number
+    severity?: number,
+    clientMeta?: SlackClientMeta
   ): Promise<void> {
     if (!this.webhookUrl) {
       console.log("Slack webhook URL not configured, skipping symptom notification");
@@ -178,9 +248,10 @@ export class SlackService {
       const severityLabels = ["None", "Mild", "Moderate", "Severe"];
       const severityText =
         severity != null ? (severityLabels[severity] ?? `Level ${severity}`) : "—";
-      const body = `*New symptom logged!* 📋\n\n*User:* ${userEmail}\n*User ID:* \`${userId}\`\n*Symptom:* ${symptomLabel}\n*Severity:* ${severityText}\n*Record ID:* \`${symptomLogId}\`\n*Time:* ${new Date().toLocaleString()}`;
+      const envSection = this.buildEnvironmentSection(clientMeta);
+      const body = `*New symptom logged!* 📋\n\n*User:* ${userEmail}\n*User ID:* \`${userId}\`\n*Symptom:* ${symptomLabel}\n*Severity:* ${severityText}\n*Record ID:* \`${symptomLogId}\`\n*Time:* ${new Date().toLocaleString()}${envSection}`;
       const message = {
-        text: this.prefix("📋 New symptom logged!"),
+        text: this.prefix(this.stagingTag("📋 New symptom logged!")),
         blocks: [
           {
             type: "section",
@@ -218,6 +289,8 @@ export class SlackService {
    * @param {string | null | undefined} payload.aiSummary - What the app showed (text only)
    * @param {string | null | undefined} payload.storagePath - Optional Storage path for the photo
    * @param {string | null | undefined} payload.appVersion - Client app version
+   * @param {string | null | undefined} payload.clientFirebaseProjectId - Client-reported Firebase project id
+   * @param {string | null | undefined} payload.appEnv - Client app env (e.g. staging)
    * @return {Promise<void>}
    */
   async notifyAiAnalysisFeedback(payload: {
@@ -229,6 +302,8 @@ export class SlackService {
     aiSummary?: string | null;
     storagePath?: string | null;
     appVersion?: string | null;
+    clientFirebaseProjectId?: string | null;
+    appEnv?: string | null;
   }): Promise<void> {
     if (!this.webhookUrl) {
       console.log("Slack webhook URL not configured, skipping AI feedback notification");
@@ -267,7 +342,11 @@ export class SlackService {
       const noteBlock = clip(payload.userNote, maxSnippet);
       const summaryBlock = clip(payload.aiSummary, maxSnippet);
       const pathLine = payload.storagePath ? `\n*Storage path:* \`${payload.storagePath}\`` : "";
-      const versionLine = payload.appVersion ? `\n*App version:* ${payload.appVersion}` : "";
+      const envSection = this.buildEnvironmentSection({
+        clientFirebaseProjectId: payload.clientFirebaseProjectId,
+        appVersion: payload.appVersion,
+        appEnv: payload.appEnv,
+      });
 
       const body =
         "*AI analysis feedback* 📝\n\n" +
@@ -283,14 +362,14 @@ export class SlackService {
         payload.feedbackId +
         "`" +
         pathLine +
-        versionLine +
         "\n" +
-        `*Time:* ${new Date().toLocaleString()}\n\n` +
-        `*AI summary (what they saw):*\n\`\`\`\n${summaryBlock}\n\`\`\`\n\n` +
+        `*Time:* ${new Date().toLocaleString()}` +
+        envSection +
+        `\n\n*AI summary (what they saw):*\n\`\`\`\n${summaryBlock}\n\`\`\`\n\n` +
         `*User note:*\n\`\`\`\n${noteBlock}\n\`\`\``;
 
       const message = {
-        text: this.prefix("AI analysis feedback"),
+        text: this.prefix(this.stagingTag("AI analysis feedback")),
         blocks: [
           {
             type: "section",
@@ -336,11 +415,14 @@ export class SlackService {
 
     try {
       const hasEmail = !!(userEmail && String(userEmail).trim());
+      const envSection = this.buildEnvironmentSection({});
       const body = hasEmail
-        ? `*New user signed up* 🎉\n\n*Email:* ${userEmail}\n*User ID:* \`${userId}\`${displayName ? `\n*Name:* ${displayName}` : ""}\n*Time:* ${new Date().toLocaleString()}`
-        : `*New user signed up* (anonymous)\n\nNo email on this account (anonymous or not yet linked).\n\n*User ID:* \`${userId}\`${displayName ? `\n*Name:* ${displayName}` : ""}\n*Time:* ${new Date().toLocaleString()}`;
+        ? `*New user signed up* 🎉\n\n*Email:* ${userEmail}\n*User ID:* \`${userId}\`${displayName ? `\n*Name:* ${displayName}` : ""}\n*Time:* ${new Date().toLocaleString()}${envSection}`
+        : `*New user signed up* (anonymous)\n\nNo email on this account (anonymous or not yet linked).\n\n*User ID:* \`${userId}\`${displayName ? `\n*Name:* ${displayName}` : ""}\n*Time:* ${new Date().toLocaleString()}${envSection}`;
       const message = {
-        text: this.prefix(hasEmail ? "New user signed up" : "New user (anonymous)"),
+        text: this.prefix(
+          this.stagingTag(hasEmail ? "New user signed up" : "New user (anonymous)")
+        ),
         blocks: [
           {
             type: "section",
@@ -369,9 +451,9 @@ export class SlackService {
 
   /**
    * Sends a message to Slack using the webhook
-   * @param {Object} message - The message object to send
+   * @param {Record<string, unknown>} message - The message object to send
    */
-  private async sendToSlack(message: any): Promise<void> {
+  private async sendToSlack(message: Record<string, unknown>): Promise<void> {
     try {
       const response = await fetch(this.webhookUrl, {
         method: "POST",
