@@ -14,7 +14,7 @@ import * as os from "os";
 import * as path from "path";
 import { processReengagementNudges, processReminders } from "./notifications";
 import { AIService, isMealImageSuitableForLog, isStoolImageSuitableForLog } from "./services/ai";
-import { SlackService, slackClientMetaFromFirestoreData } from "./services/slack";
+import { SlackService, SlackClientMeta, slackClientMetaFromFirestoreData } from "./services/slack";
 import { generateUserWeeklySummary } from "./user";
 
 admin.initializeApp();
@@ -494,6 +494,47 @@ export const onAiAnalysisFeedbackCreated = onDocumentCreated(
   }
 );
 
+/**
+ * Reads signup client metadata from user_profiles with short retries.
+ * Uses a single lookup to keep auth-trigger execution fast and deterministic.
+ * @param {string} userId Firebase Auth uid.
+ * @return {Promise<SlackClientMeta | undefined>}
+ */
+async function getSignupClientMetaFromUserProfile(
+  userId: string
+): Promise<SlackClientMeta | undefined> {
+  const snap = await db.collection("user_profiles").doc(userId).get();
+  if (!snap.exists) return undefined;
+
+  const data = snap.data() as Record<string, unknown>;
+  const appVersion =
+    typeof data.first_seen_app_version === "string"
+      ? data.first_seen_app_version
+      : typeof data.latest_seen_app_version === "string"
+        ? data.latest_seen_app_version
+        : null;
+  const appEnv =
+    typeof data.first_seen_app_env === "string"
+      ? data.first_seen_app_env
+      : typeof data.latest_seen_app_env === "string"
+        ? data.latest_seen_app_env
+        : null;
+  const projectId =
+    typeof data.first_seen_firebase_project_id === "string"
+      ? data.first_seen_firebase_project_id
+      : typeof data.latest_seen_firebase_project_id === "string"
+        ? data.latest_seen_firebase_project_id
+        : null;
+  if (appVersion || appEnv || projectId) {
+    return {
+      appVersion,
+      appEnv,
+      clientFirebaseProjectId: projectId,
+    };
+  }
+  return undefined;
+}
+
 // New function to handle digestion record processing
 export const onDigestionRecordCreated = onDocumentCreated(
   "/digestion_records/{recordId}",
@@ -960,7 +1001,13 @@ export const onFirebaseAuthUserCreate = authFunctionsV1.user().onCreate(async (u
 
     try {
       const slackService = SlackService.getInstance();
-      await slackService.notifyUserCreated(user.uid, email, user.displayName ?? undefined);
+      const clientMeta = await getSignupClientMetaFromUserProfile(user.uid);
+      await slackService.notifyUserCreated(
+        user.uid,
+        email,
+        user.displayName ?? undefined,
+        clientMeta
+      );
       console.log("Successfully sent user signup notification to Slack");
     } catch (error) {
       console.error("Failed to send Slack notification:", error);

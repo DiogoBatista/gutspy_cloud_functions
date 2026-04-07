@@ -401,12 +401,14 @@ export class SlackService {
    * @param {string} userId - Firebase Auth UID
    * @param {string | null | undefined} userEmail - Email when present; anonymous users have none
    * @param {string | null | undefined} displayName - Optional display name
+   * @param {SlackClientMeta} [clientMeta] - Optional client metadata from user_profiles
    * @return {Promise<void>}
    */
   async notifyUserCreated(
     userId: string,
     userEmail: string | null | undefined,
-    displayName?: string | null
+    displayName?: string | null,
+    clientMeta?: SlackClientMeta
   ): Promise<void> {
     if (!this.webhookUrl) {
       console.log("Slack webhook URL not configured, skipping user creation notification");
@@ -415,7 +417,7 @@ export class SlackService {
 
     try {
       const hasEmail = !!(userEmail && String(userEmail).trim());
-      const envSection = this.buildEnvironmentSection({});
+      const envSection = this.buildEnvironmentSection(clientMeta);
       const body = hasEmail
         ? `*New user signed up* 🎉\n\n*Email:* ${userEmail}\n*User ID:* \`${userId}\`${displayName ? `\n*Name:* ${displayName}` : ""}\n*Time:* ${new Date().toLocaleString()}${envSection}`
         : `*New user signed up* (anonymous)\n\nNo email on this account (anonymous or not yet linked).\n\n*User ID:* \`${userId}\`${displayName ? `\n*Name:* ${displayName}` : ""}\n*Time:* ${new Date().toLocaleString()}${envSection}`;

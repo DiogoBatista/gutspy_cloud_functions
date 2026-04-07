@@ -17,6 +17,8 @@
     "deploy:indexes:staging": "firebase use staging && firebase deploy --only firestore:indexes",
     "deploy:indexes:production": "firebase use production && firebase deploy --only firestore:indexes",
     "deploy:indexes:all": "firebase use staging && firebase deploy --only firestore:indexes && firebase use production && firebase deploy --only firestore:indexes",
+    "seed:mobile-update:staging": "FIREBASE_PROJECT_ID=gutspy-stg node scripts/seed-mobile-update-config.js",
+    "seed:mobile-update:production": "FIREBASE_PROJECT_ID=nutrisnap-96caf node scripts/seed-mobile-update-config.js",
     "logs": "firebase functions:log"
   },
   "engines": {

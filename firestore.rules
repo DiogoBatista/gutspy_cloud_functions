@@ -27,6 +27,11 @@ service cloud.firestore {
       allow delete: if request.auth != null && resource.data.userID == request.auth.uid;
       allow create, update: if false;
     }
+
+    match /app_config/mobile_update {
+      allow read: if request.auth != null;
+      allow write: if false;
+    }
     match /{document=**} {
       allow read, write: if (request.auth != null)
                         && (request.auth.token.firebase.sign_in_provider == 'google.com'
